@@ -491,7 +491,15 @@ async def spoll_checker(bot, query):
         k = (search, files, offset, total_results)
         await auto_filter(bot, query, k)
     else:
-        k = await query.message.edit(script.NO_RESULT_TXT)
+        buttons = [[
+            InlineKeyboardButton("⚠️ ʀᴇᴏ̨ᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ ⚠️", callback_data=f"req_admin#{search}#{query.from_user.id}")
+        ], [
+            InlineKeyboardButton("🚫 ᴄʟᴏsᴇ 🚫", callback_data="close_data")
+        ]]
+        k = await query.message.edit_text(
+            text=script.NO_RESULT_TXT,
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
         await asyncio.sleep(60)
         await k.delete()
         try:
@@ -499,9 +507,32 @@ async def spoll_checker(bot, query):
         except:
             pass
 
+@Client.on_callback_query(filters.regex(r"^req_admin"))
+async def request_to_admin(bot, query):
+    _, search, user_id = query.data.split('#')
+    if int(user_id) != query.from_user.id:
+        return await query.answer(script.ALRT_TXT, show_alert=True)
+    buttons = [[
+        InlineKeyboardButton('👀 View Request', url=f"{query.message.link}")
+    ],[
+        InlineKeyboardButton('⚙ Show Options', callback_data=f'show_options#{query.from_user.id}#{query.message.id}')
+    ]]
+    sent_request = await bot.send_message(
+        REQUEST_CHANNEL,
+        script.REQUEST_TXT.format(query.from_user.mention, query.from_user.id, search),
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    btn = [[
+        InlineKeyboardButton('✨ ᴠɪᴇᴡ ʏᴏᴜʀ ʀᴇᴏ̨ᴜᴇsᴛ ✨', url=f"{sent_request.link}")
+    ]]
+    await query.message.edit_text(
+        text="<b>✅ Your request has been sent to admin!</b>",
+        reply_markup=InlineKeyboardMarkup(btn)
+    )
+    await query.answer()
+    
 @Client.on_callback_query()
 async def cb_handler(client: Client, query: CallbackQuery):
-
     if query.data == "close_data":
         try:
             user = query.message.reply_to_message.from_user.id
@@ -1158,14 +1189,11 @@ async def auto_filter(client, msg, spoll=False):
         message = msg
         search = message.text
         chat_id = message.chat.id
-        search_msg = await msg.reply_text(f'<b>🎯 sᴇᴀʀᴄʜɪɴɢ "{search}"</b>')
-
+        search_msg = await msg.reply_text(f'<b>🕵️ sᴇᴀʀᴄʜɪɴɢ {search}"</b>')
         settings = await get_settings(chat_id)
         files, offset, total_results = await get_search_results(search)
         silicondb.update_silicon_messages(message.from_user.id, message.text)
-
         await search_msg.delete()
-
         if not files:
             if settings["spell_check"]:
                 ai_sts = await msg.reply_text('<b>ᴀɪ ɪs ᴄʜᴇᴄᴋɪɴɢ ꜰᴏʀ ʏᴏᴜʀ sᴘᴇʟʟɪɴɢ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</b>')
@@ -1183,15 +1211,11 @@ async def auto_filter(client, msg, spoll=False):
         settings = await get_settings(msg.message.chat.id)
         message = msg.message.reply_to_message
         search, files, offset, total_results = spoll
-
     req = message.from_user.id if message.from_user else 0
     key = f"{message.chat.id}-{message.id}"
-
     temp.FILES_ID[key] = files
     temp.CHAT[message.from_user.id] = message.chat.id
-
     del_msg = f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>" if settings.get("auto_delete") else ""
-
     if settings.get("link"):
         links = "".join([
             f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{message.chat.id}_{f['_id']}>[{get_size(f['file_size'])}] {formate_file_name(f['file_name'])}</a></b>"
@@ -1348,9 +1372,8 @@ async def silicon_spell_check(message):
         return
     if not movies:
         google = search.replace(" ", "+")
-        button = [[
-            InlineKeyboardButton("🔍 ᴄʜᴇᴄᴋ sᴘᴇʟʟɪɴɢ ᴏɴ ɢᴏᴏɢʟᴇ 🔍", url=f"https://www.google.com/search?q={google}")
-        ]]
+        button = [[InlineKeyboardButton("🔍 ᴄʜᴇᴄᴋ sᴘᴇʟʟɪɴɢ ᴏɴ ɢᴏᴏɢʟᴇ 🔍", url=f"https://www.google.com/search?q={google}")],
+            [ InlineKeyboardButton("📮 ʀᴇǫᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ 📮", callback_data=f"req_admin#{search}#{message.from_user.id}")]]
         k = await message.reply_text(text=script.I_CUDNT.format(search), reply_markup=InlineKeyboardMarkup(button))
         await asyncio.sleep(120)
         await k.delete()
