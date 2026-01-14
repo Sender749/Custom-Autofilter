@@ -116,12 +116,76 @@ async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
             next_offset = ''
         return files, next_offset, total_results
 
-    total_results = len(results)
-    files = results[offset:][:max_results]
+    ranked = rank_results(query, results)
+    total_results = len(ranked)
+    files = ranked[offset:offset + max_results]
     next_offset = offset + max_results
     if next_offset >= total_results:
-        next_offset = ''   
+        next_offset = ''
     return files, next_offset, total_results
+
+QUALITY_RANK = {
+    "bluray": 100,
+    "bdrip": 95,
+    "remux": 98,
+    "web-dl": 90,
+    "webdl": 90,
+    "webrip": 85,
+    "hdrip": 75,
+    "hd": 70,
+    "dvdrip": 65,
+    "cam": 10,
+    "ts": 15
+}
+
+def extract_year(text: str):
+    m = re.findall(r"(19\d{2}|20\d{2})", text)
+    return max(map(int, m)) if m else 0
+
+def extract_season_episode(text: str):
+    season = episode = 0
+    sm = re.search(r"s(\d{1,2})", text, re.I)
+    em = re.search(r"e(\d{1,2})", text, re.I)
+    if sm:
+        season = int(sm.group(1))
+    if em:
+        episode = int(em.group(1))
+    return season, episode
+
+def extract_quality(text: str):
+    t = text.lower()
+    for q, score in QUALITY_RANK.items():
+        if q in t:
+            return score
+    return 0
+
+def has_multi_audio(text: str):
+    t = text.lower()
+    return any(x in t for x in ["dual", "multi", "multi-audio", "dual-audio"])
+
+def normalize_title(text: str):
+    text = text.lower()
+    text = re.sub(r"(19\d{2}|20\d{2})", "", text)
+    text = re.sub(r"s\d{1,2}e\d{1,2}", "", text)
+    text = re.sub(r"s\d{1,2}", "", text)
+    return re.sub(r"[^a-z0-9 ]", "", text).strip()
+    
+def rank_results(query, files):
+    q_norm = normalize_title(query)
+    def score(f):
+        text = f.get("caption") or f.get("file_name", "")
+        t_norm = normalize_title(text)
+        exact = 1000 if t_norm == q_norm else 0
+        starts = 300 if t_norm.startswith(q_norm) else 0
+        contains = 150 if q_norm in t_norm else 0
+        year = extract_year(text) * 5
+        quality = extract_quality(text)
+        season, episode = extract_season_episode(text)
+        season_score = season * 50
+        episode_score = -episode
+        audio = 200 if has_multi_audio(text) else 0
+        return exact + starts + contains + year + quality + season_score + episode_score + audio
+    return sorted(files, key=score, reverse=True)
 
 async def delete_files(query):
     query = query.strip()
