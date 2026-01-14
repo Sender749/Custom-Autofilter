@@ -1,6 +1,6 @@
 import asyncio
 import re
-import math
+import math, time
 from pyrogram.errors.exceptions.bad_request_400 import MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty
 from Script import script
 import pyrogram
@@ -24,6 +24,9 @@ logger.setLevel(logging.ERROR)
 BUTTONS = {}
 FILES_ID = {}
 CAP = {}
+PAGE_CACHE = {}
+PAGE_CACHE_TTL = 300  # 5 minutes
+PAGE_PREFETCH = 3     # current + next 2 pages
 
 @Client.on_message(filters.private & filters.text & filters.incoming)
 async def pm_search(client, message):
@@ -41,6 +44,26 @@ def get_display_name(file: dict) -> str:
     if caption and caption.strip():
         return caption.strip()
     return file.get("file_name", "Unknown File")
+
+def _page_cache_key(search: str):
+    return search.lower().strip()
+
+def get_cached_pages(search):
+    key = _page_cache_key(search)
+    data = PAGE_CACHE.get(key)
+    if not data:
+        return None
+    if time.time() - data["time"] > PAGE_CACHE_TTL:
+        PAGE_CACHE.pop(key, None)
+        return None
+    return data["pages"]
+
+def set_cached_pages(search, pages):
+    key = _page_cache_key(search)
+    PAGE_CACHE[key] = {
+        "pages": pages,
+        "time": time.time()
+    }
 
 @Client.on_message(filters.group & filters.text & filters.incoming)
 async def group_search(client, message):
@@ -128,7 +151,12 @@ async def next_page(bot, query):
         cap = CAP.get(key, "")
         if not search:
             return await query.answer(script.OLD_ALRT_TXT.format(query.from_user.first_name), show_alert=True)
-        files, n_offset, total = await get_search_results(search, offset=offset)
+        cached_pages = get_cached_pages(search)
+        page_index = offset // int(MAX_BTN)
+        if cached_pages and page_index < len(cached_pages):
+            files, n_offset, total = cached_pages[page_index]
+        else:
+            files, n_offset, total = await get_search_results(search, offset=offset)
         n_offset = int(n_offset) if n_offset else 0
         if not files:
             return await query.answer("No files found", show_alert=True)
@@ -220,39 +248,31 @@ async def seasons_cb_handler(client: Client, query: CallbackQuery):
 @Client.on_callback_query(filters.regex(r"^season_search#"))
 async def season_search(client: Client, query: CallbackQuery):
     _, season, key, offset, original_offset, req = query.data.split("#")
-
     if int(req) != query.from_user.id:
         return await query.answer(script.ALRT_TXT, show_alert=True)
-
     search = BUTTONS.get(key)
     if not search:
         return await query.answer(script.OLD_ALRT_TXT.format(query.from_user.first_name), show_alert=True)
-
     current_offset = int(offset)
     max_btn = int(MAX_BTN)
-
     try:
         seas_num = int(season[1:])  # Extract number from "s01" -> 1
         seas = f"S0{seas_num}" if seas_num < 10 else f"S{seas_num}"
         season_patterns = [seas, season]
     except (ValueError, IndexError):
         return await query.answer("Invalid season format", show_alert=True)
-
-    all_files, search_offset = [], 0
-    while True:
-        batch_files, next_offset, _ = await get_search_results(search.replace("_", " "), max_btn, search_offset)
-        if not batch_files:
-            break
-        all_files.extend(batch_files)
-        search_offset = int(next_offset) if next_offset else None
-        if not search_offset:
-            break
+    cached_pages = get_cached_pages(search)
+    all_files = []
+    if cached_pages:
+        for page in cached_pages:
+            all_files.extend(page[0])
+    else:
+        batch_files, _, _ = await get_search_results(search)
+        all_files = batch_files
 
     filtered_files = [f for f in all_files if any(re.search(p, f['file_name'], re.IGNORECASE) for p in season_patterns)]
-
     if not filtered_files:
         return await query.answer(f"sᴏʀʀʏ {season.title()} ɴᴏᴛ ꜰᴏᴜɴᴅ ꜰᴏʀ {search.replace('_', ' ')}", show_alert=True)
-
     page_files = filtered_files[current_offset:current_offset + max_btn]
     total_filtered = len(filtered_files)
     current_page = (current_offset // max_btn) + 1
@@ -260,10 +280,8 @@ async def season_search(client: Client, query: CallbackQuery):
     temp.FILES_ID[f"{query.message.chat.id}-{query.id}"] = page_files
     temp.CHAT[query.from_user.id] = query.message.chat.id
     settings = await get_settings(query.message.chat.id)
-
     cap = CAP.get(key, "")
     del_msg = f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>" if settings.get("auto_delete") else ""
-
     if settings.get("link"):
         links = "".join([
             f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>[{get_size(f['file_size'])}] {' '.join(filter(lambda x: not any(x.startswith(p) for p in ['[', '@', 'www.']), get_display_name(f).split()))}</a></b>"
@@ -326,15 +344,14 @@ async def quality_search(client: Client, query: CallbackQuery):
     current_offset = int(offset)
     max_btn = int(MAX_BTN)
 
-    all_files, search_offset = [], 0
-    while True:
-        batch_files, next_offset, _ = await get_search_results(search.replace("_", " "), max_btn, search_offset)
-        if not batch_files:
-            break
-        all_files.extend(batch_files)
-        search_offset = int(next_offset) if next_offset else None
-        if not search_offset:
-            break
+    cached_pages = get_cached_pages(search)
+    all_files = []
+    if cached_pages:
+        for page in cached_pages:
+            all_files.extend(page[0])
+    else:
+        batch_files, _, _ = await get_search_results(search)
+        all_files = batch_files
 
     filtered_files = [f for f in all_files if re.search(qul, f['file_name'], re.IGNORECASE)]
 
@@ -418,16 +435,15 @@ async def lang_search(client: Client, query: CallbackQuery):
     max_btn = int(MAX_BTN)
     lang_patterns = [lang, lang[:3]]
 
-    all_files, search_offset = [], 0
-    while True:
-        batch_files, next_offset, _ = await get_search_results(search.replace("_", " "), max_btn, search_offset)
-        if not batch_files:
-            break
-        all_files.extend(batch_files)
-        search_offset = int(next_offset) if next_offset else None
-        if not search_offset:
-            break
-
+    cached_pages = get_cached_pages(search)
+    all_files = []
+    if cached_pages:
+        for page in cached_pages:
+            all_files.extend(page[0])
+    else:
+        batch_files, _, _ = await get_search_results(search)
+        all_files = batch_files
+        
     filtered_files = [f for f in all_files if any(re.search(p, f['file_name'], re.IGNORECASE) for p in lang_patterns)]
 
     if not filtered_files:
@@ -1172,7 +1188,20 @@ async def auto_filter(client, msg, spoll=False):
         chat_id = message.chat.id
         search_msg = await msg.reply_text(f'<b>🕵️ sᴇᴀʀᴄʜɪɴɢ {search}"</b>')
         settings = await get_settings(chat_id)
-        files, offset, total_results = await get_search_results(search)
+        cached_pages = get_cached_pages(search)
+        if cached_pages:
+            files, offset, total_results = cached_pages[0]
+        else:
+            pages = []
+            off = 0
+            for _ in range(PAGE_PREFETCH):
+                f, n_off, total = await get_search_results(search, offset=off)
+                pages.append((f, n_off, total))
+                if not n_off:
+                    break
+                off = int(n_off)
+                set_cached_pages(search, pages)
+                files, offset, total_results = pages[0]
         silicondb.update_silicon_messages(message.from_user.id, message.text)
         await search_msg.delete()
         if not files:
