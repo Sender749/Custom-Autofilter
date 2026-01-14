@@ -80,6 +80,8 @@ REQUEST_CHANNEL = int(request_channel) if request_channel and id_pattern.search(
 
 MOVIE_UPDATE_NOTIFICATION = bool(environ.get('MOVIE_UPDATE_NOTIFICATION', False))  # Notification On (True) / Off (False)
 MOVIE_UPDATE_CHANNEL = int(environ.get('MOVIE_UPDATE_CHANNEL', '-1003136895050'))  # Notification of sent to your channel
+fetch_update_channels = environ.get("FETCH_MOVIE_UPDATE","-1003136895050") # Movie Update Fetch Channels (use space for multiple channels)
+FETCH_MOVIE_UPDATE = [int(ch) for ch in fetch_update_channels.split()if ch and id_pattern.match(ch)]
 CHANNELS = [int(ch) if id_pattern.search(ch) else ch for ch in environ.get('CHANNELS', '-1002445793312').split()] # Auto Index Channel
 DELETE_CHANNELS = int(environ.get('DELETE_CHANNELS','-1003136895050')) # Channel to delete file from DB
 IMAGE_FETCH = bool(environ.get('IMAGE_FETCH', True))  # On (True) / Off (False)
