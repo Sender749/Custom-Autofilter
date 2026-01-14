@@ -48,8 +48,8 @@ COLLECTION_NAME = environ.get('COLLECTION_NAME', 'navex')
 # Verify/Shortlink Settings 
 
 IS_VERIFY = is_enabled('IS_VERIFY', True)
-LOG_VR_CHANNEL = int(environ.get('LOG_VR_CHANNEL', ''))
-LOG_API_CHANNEL = int(environ.get('LOG_API_CHANNEL', ''))
+LOG_VR_CHANNEL = int(environ.get('LOG_VR_CHANNEL', '-1003137381162'))
+LOG_API_CHANNEL = int(environ.get('LOG_API_CHANNEL', '-1003137381162'))
 TUTORIAL = environ.get("TUTORIAL", "https://t.me/Navexdisscussion/33")
 TUTORIAL2 = environ.get("TUTORIAL2", "https://t.me/Navexdisscussion/33")
 TUTORIAL3 = environ.get("TUTORIAL3", "https://t.me/Navexdisscussion/33")
