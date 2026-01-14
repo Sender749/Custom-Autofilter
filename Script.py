@@ -1,11 +1,5 @@
 class script(object):
-    START_TXT = """<b> ʜɪ {} {},
-    
-ɪ'ᴍ ᴛʜᴇ ᴍᴏsᴛ ᴀᴅᴠᴀɴᴄᴇ ᴀɪ ᴘᴏᴡᴇʀᴅ 🤖 ᴀᴜᴛᴏ ꜰɪʟᴛᴇʀ ʙᴏᴛ..
-sᴇɴᴅ ᴍᴇ ᴀɴʏ ᴍᴏᴠɪᴇ ᴏʀ sᴇʀɪᴇs ɴᴀᴍᴇ ᴀɴᴅ sᴇᴇ ᴍʏ ᴍᴀɢɪᴄ..✨
-
-<blockquote>ᴍᴀɪɴᴛᴀɪɴᴇᴅ ʙʏ : <a href='https://telegram.me/Silicon_Official'>ѕιℓι¢ση σƒƒ¢ιαℓ</a></blockquote>
-</b>"""
+    START_TXT = """<b>𝐻𝐸𝑌 {} 👋, \n\n𝑆𝐸𝑁𝐷 𝑀𝐸 𝑀𝑂𝑉𝐼𝐸, 𝑆𝐸𝑅𝐼𝐸𝑆, 𝐴𝑁𝐼𝑀𝐸, 𝑆𝐻𝑂𝑊'𝑆 𝑒𝑡𝑐. 𝑁𝐴𝑀𝐸 𝑊𝐼𝑇𝐻 𝐶𝑂𝑅𝑅𝐸𝐶𝑇 𝑆𝑃𝐸𝐿𝐿𝐼𝑁𝐺 😍\n\n<blockquote>🌿 ᴍᴀɪɴᴛᴀɪɴᴇᴅ ʙʏ : <a href="https://t.me/Navex_69">ɴᴀᴠᴇx</a></blockquote></b>"""
     
     HELP_TXT = """<b>ᴄʟɪᴄᴋ ᴏɴ ᴛʜᴇ ʙᴜᴛᴛᴏɴꜱ ʙᴇʟᴏᴡ ᴛᴏ ɢᴇᴛ ᴅᴏᴄᴜᴍᴇɴᴛᴀᴛɪᴏɴ ᴀʙᴏᴜᴛ ꜱᴘᴇᴄɪꜰɪᴄ ᴍᴏᴅᴜʟᴇꜱ..</b>"""
     
@@ -142,7 +136,7 @@ sᴇɴᴅ ᴍᴇ ᴀɴʏ ᴍᴏᴠɪᴇ ᴏʀ sᴇʀɪᴇs ɴᴀᴍᴇ ᴀɴᴅ 
 ❗️ ʟᴀɴɢᴜᴀɢᴇ - {languages}</b>
 """
 
-    FILE_CAPTION = """<b>{file_name}\n\nUploaded By: <a href="https://t.me/Silicon_Bot_Update">Silicon Botz</a></b>"""
+    FILE_CAPTION = """<b><a href="https://t.me/Navex_Movies">💎💎</a>{file_caption}</b>"""
 
     MOVIE_UPDATE_NOTIFY_TXT = """
 </b><a href={poster_url}>📥</a><a href={imdb_url}>New {tag} Added</a></b>
