@@ -23,7 +23,7 @@ API_HASH = environ.get('API_HASH', 'e99c3c5693d6d23a143b6ce760b7a6de')
 BOT_TOKEN = environ.get('BOT_TOKEN', '')
 ADMINS = [int(admin) if id_pattern.search(admin) else admin for admin in environ.get('ADMINS', '6541030917').split()]
 USERNAME = environ.get('USERNAME', "https://telegram.me/Navex_69")
-LOG_CHANNEL = int(environ.get('LOG_CHANNEL', '-1002262450769'))
+LOG_CHANNEL = int(environ.get('LOG_CHANNEL', '-1003137381162'))
 MOVIE_GROUP_LINK = environ.get('MOVIE_GROUP_LINK', 'https://t.me/Navex_Movies')
 
 # Pics 
