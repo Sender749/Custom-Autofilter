@@ -653,12 +653,12 @@ async def send_msg(bot, message):
     else:
         await message.reply_text("<b>ᴜꜱᴇ ᴛʜɪꜱ ᴄᴏᴍᴍᴀɴᴅ ᴀꜱ ᴀ ʀᴇᴘʟʏ ᴛᴏ ᴀɴʏ ᴍᴇꜱꜱᴀɢᴇ, ꜰᴏʀ ᴇɢ - <code>/send userid1 userid2</code></b>")
 
-@Client.on_message(filters.regex("#request"))
+@Client.on_message(filters.regex(r"^(#request|/request|/Request|#Request|/req|#req|/Req|#Req)"))
 async def send_request(bot, message):
     try:
         request = message.text.split(" ", 1)[1]
     except:
-        await message.reply_text("<b>‼️ ʏᴏᴜʀ ʀᴇǫᴜᴇsᴛ ɪs ɪɴᴄᴏᴍᴘʟᴇᴛᴇ</b>")
+        await message.reply_text("<b>‼️ ʏᴏᴜʀ ʀᴇǫᴜᴇsᴛ ɪs ɪɴᴄᴏᴍᴘʟᴇᴛᴇ\n\nᴜsᴇ ᴛʜɪs ғᴏʀᴍᴀᴛ 👇\n\nᴇxᴀᴍᴘʟᴇ : /request ironman 2013</b>")
         return
     buttons = [[
         InlineKeyboardButton('👀 ᴠɪᴇᴡ ʀᴇǫᴜᴇꜱᴛ 👀', url=f"{message.link}")
