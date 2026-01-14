@@ -247,4 +247,20 @@ def unpack_new_file_id(new_file_id):
     )
     return file_id
 
-# Code By HABot Modified By @SiliconBots
+async def get_filter_words():
+    try:
+        doc = await filter_words_collection.find_one({"_id": "filter_words"})
+        return set(doc["words"]) if doc else set()
+    except Exception as e:
+        logger.error(f"Error getting filter words: {e}")
+        return set()
+
+async def set_filter_words(words):
+    try:
+        await filter_words_collection.update_one(
+            {"_id": "filter_words"},
+            {"$set": {"words": list(words)}},
+            upsert=True
+        )
+    except Exception as e:
+        logger.error(f"Error setting filter words: {e}")
