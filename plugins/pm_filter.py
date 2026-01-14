@@ -116,29 +116,20 @@ async def group_search(client, message):
         k=await message.reply_text('<b>⚠️ ᴀᴜᴛᴏ ꜰɪʟᴛᴇʀ ᴍᴏᴅᴇ ɪꜱ ᴏꜰꜰ...</b>')
         await asyncio.sleep(10)
         await k.delete()
-        try:
-            await message.delete()
-        except:
-            pass
 
 @Client.on_callback_query(filters.regex(r"^next"))
 async def next_page(bot, query):
     try:
         ident, req, key, offset = query.data.split("_")
-
         if int(req) not in [query.from_user.id, 0]:
             return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
-
         offset = max(0, int(offset))  
         search = BUTTONS.get(key)
         cap = CAP.get(key, "")
-
         if not search:
             return await query.answer(script.OLD_ALRT_TXT.format(query.from_user.first_name), show_alert=True)
-
         files, n_offset, total = await get_search_results(search, offset=offset)
         n_offset = int(n_offset) if n_offset else 0
-
         if not files:
             return await query.answer("No files found", show_alert=True)
 
@@ -505,10 +496,6 @@ async def spoll_checker(bot, query):
         )
         await asyncio.sleep(60)
         await k.delete()
-        try:
-            await query.message.reply_to_message.delete()
-        except:
-            pass
 
 @Client.on_callback_query(filters.regex(r"^req_admin"))
 async def request_to_admin(bot, query):
@@ -545,10 +532,6 @@ async def cb_handler(client: Client, query: CallbackQuery):
             return await query.answer(script.ALRT_TXT, show_alert=True)
         await query.answer("ᴛʜᴀɴᴋs ꜰᴏʀ ᴄʟᴏsᴇ 🙈")
         await query.message.delete()
-        try:
-            await query.message.reply_to_message.delete()
-        except:
-           pass
 
     elif query.data == "premium":
         userid = query.from_user.id
@@ -604,17 +587,12 @@ async def cb_handler(client: Client, query: CallbackQuery):
         userid = query.from_user.id
         chat_type = query.message.chat.type
         if chat_type == enums.ChatType.PRIVATE:
-            await query.message.reply_to_message.delete()
             await query.message.delete()
         elif chat_type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
             grp_id = query.message.chat.id
             st = await client.get_chat_member(grp_id, userid)
             if (st.status == enums.ChatMemberStatus.OWNER) or (str(userid) in ADMINS):
                 await query.message.delete()
-                try:
-                    await query.message.reply_to_message.delete()
-                except:
-                    pass
             else:
                 await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)    
 
@@ -1332,7 +1310,6 @@ async def auto_filter(client, msg, spoll=False):
             await asyncio.sleep(DELETE_TIME)
             try:
                 await response_msg.delete()
-                await message.delete()
             except:
                 pass
 
@@ -1368,10 +1345,6 @@ async def silicon_spell_check(message):
         k = await message.reply(script.I_CUDNT.format(message.from_user.mention))
         await asyncio.sleep(60)
         await k.delete()
-        try:
-            await message.delete()
-        except:
-            pass
         return
     if not movies:
         google = search.replace(" ", "+")
@@ -1380,10 +1353,6 @@ async def silicon_spell_check(message):
         k = await message.reply_text(text=script.I_CUDNT.format(search), reply_markup=InlineKeyboardMarkup(button))
         await asyncio.sleep(120)
         await k.delete()
-        try:
-            await message.delete()
-        except:
-            pass
         return
     user = message.from_user.id if message.from_user else 0
     buttons = [[
