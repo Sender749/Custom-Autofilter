@@ -343,15 +343,18 @@ async def send_movie_update(bot, base_name):
             for f in movie_doc["files"]:
                 if f.get("source_channel"):
                     channels.add(f["source_channel"])
-            buttons = [[InlineKeyboardButton(f"📢 {ch}",url=f"https://t.me/{ch}")] for ch in sorted(channels)] reply_markup = InlineKeyboardMarkup(buttons)
-
+            buttons = [
+                [InlineKeyboardButton(f"📢 {ch}", url=f"https://t.me/{ch}")]
+                for ch in sorted(channels)
+            ]
+            reply_markup = InlineKeyboardMarkup(buttons)
             if movie_doc.get("poster_url") and not LINK_PREVIEW:
                 resized_poster = await fetch_image(movie_doc["poster_url"], size=(2560, 1440) if LANDSCAPE_POSTER and TMDB_POSTER and not error_tmdb else (853, 1280))
                 msg = await bot.send_photo(
                     chat_id=MOVIE_UPDATE_CHANNEL,
                     photo=resized_poster,
                     caption=text,
-                    reply_markup=buttons,
+                    reply_markup=reply_markup,
                     parse_mode=enums.ParseMode.HTML
                 )
                 is_photo = True
@@ -359,7 +362,7 @@ async def send_movie_update(bot, base_name):
                 send_params = {
                     "chat_id": MOVIE_UPDATE_CHANNEL,
                     "text": text,
-                    "reply_markup": buttons,
+                    "reply_markup": reply_markup,
                     "parse_mode": enums.ParseMode.HTML
                 }
                 if movie_doc.get("poster_url") and LINK_PREVIEW:
@@ -388,11 +391,14 @@ async def update_movie_message(bot, base_name):
 
         text = generate_movie_message(movie_doc, base_name)
         channels = set()
-            for f in movie_doc["files"]:
-                if f.get("source_channel"):
-                    channels.add(f["source_channel"])
-            buttons = [[InlineKeyboardButton(f"📢 {ch}",url=f"https://t.me/{ch}")] for ch in sorted(channels)] reply_markup = InlineKeyboardMarkup(buttons)
-
+        for f in movie_doc["files"]:
+            if f.get("source_channel"):
+                channels.add(f["source_channel"])
+        buttons = [
+            [InlineKeyboardButton(f"📢 {ch}", url=f"https://t.me/{ch}")]
+            for ch in sorted(channels)
+        ]
+        reply_markup = InlineKeyboardMarkup(buttons)
         message_id = movie_doc.get("message_id")
         is_photo = movie_doc.get("is_photo", False)
 
@@ -406,7 +412,7 @@ async def update_movie_message(bot, base_name):
                     chat_id=MOVIE_UPDATE_CHANNEL,
                     message_id=message_id,
                     caption=text,
-                    reply_markup=buttons,
+                    reply_markup=reply_markup,
                     parse_mode=enums.ParseMode.HTML
                 )
             else:
@@ -414,7 +420,7 @@ async def update_movie_message(bot, base_name):
                     chat_id=MOVIE_UPDATE_CHANNEL,
                     message_id=message_id,
                     text=text,
-                    reply_markup=buttons,
+                    reply_markup=reply_markup,
                     parse_mode=enums.ParseMode.HTML,
                     invert_media=ABOVE_PREVIEW,
                     disable_web_page_preview=not LINK_PREVIEW
@@ -516,5 +522,6 @@ def generate_movie_message(movie_doc, base_name):
         rating=movie_doc.get("rating", "N/A"),
         search_link=temp.B_LINK
     )
+
 
 
