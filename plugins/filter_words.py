@@ -1,7 +1,6 @@
 from pyrogram import filters, Client
 from info import ADMINS
 from database.ia_filterdb import get_filter_words, set_filter_words
-from Jisshu.bot import JisshuBot
 import logging
 
 logger = logging.getLogger(__name__)
