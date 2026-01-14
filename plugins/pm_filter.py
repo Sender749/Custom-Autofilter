@@ -32,12 +32,15 @@ async def pm_search(client, message):
     sili = silicondb.get_bot_sttgs()
     if not sili.get('PM_SEARCH', False) if sili else False:
         return await message.reply_text('<b><i>ᴘᴍ sᴇᴀʀᴄʜ ᴡᴀs ᴅɪsᴀʙʟᴇᴅ sᴇᴀʀᴄʜ ɪɴ ᴍᴏᴠɪᴇ ɢʀᴏᴜᴘ!</i></b>')
-
     if not sili.get('AUTO_FILTER', True) if sili else True:
         return await message.reply_text('<b><i>ᴀᴜᴛᴏ ꜰɪʟᴛᴇʀ ᴡᴀs ᴅɪsᴀʙʟᴇᴅ!</i></b>')
-
     await auto_filter(client, message)
 
+def get_display_name(file: dict) -> str:
+    caption = file.get("caption")
+    if caption and caption.strip():
+        return caption.strip()
+    return file.get("file_name", "Unknown File")
 
 @Client.on_message(filters.group & filters.text & filters.incoming)
 async def group_search(client, message):
@@ -152,7 +155,7 @@ async def next_page(bot, query):
 
         if settings.get("link"):
             links = "".join([
-                f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>[{get_size(f['file_size'])}] {' '.join(filter(lambda x: not any(x.startswith(p) for p in ['[', '@', 'www.']), f['file_name'].split()))}</a></b>"
+                f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>[{get_size(f['file_size'])}] {' '.join(filter(lambda x: not any(x.startswith(p) for p in ['[', '@', 'www.']), get_display_name(f).split()))}</a></b>"
                 for i, f in enumerate(files, offset + 1)
             ])
             btn = []
@@ -272,7 +275,7 @@ async def season_search(client: Client, query: CallbackQuery):
 
     if settings.get("link"):
         links = "".join([
-            f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>[{get_size(f['file_size'])}] {' '.join(filter(lambda x: not any(x.startswith(p) for p in ['[', '@', 'www.']), f['file_name'].split()))}</a></b>"
+            f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>[{get_size(f['file_size'])}] {' '.join(filter(lambda x: not any(x.startswith(p) for p in ['[', '@', 'www.']), get_display_name(f).split()))}</a></b>"
             for i, f in enumerate(page_files, current_offset + 1)
         ])
         btn = []
@@ -360,7 +363,7 @@ async def quality_search(client: Client, query: CallbackQuery):
 
     if settings.get("link"):
         links = "".join([
-            f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>[{get_size(f['file_size'])}] {' '.join(filter(lambda x: not any(x.startswith(p) for p in ['[', '@', 'www.']), f['file_name'].split()))}</a></b>"
+            f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>[{get_size(f['file_size'])}] {' '.join(filter(lambda x: not any(x.startswith(p) for p in ['[', '@', 'www.']), get_display_name(f).split()))}</a></b>"
             for i, f in enumerate(page_files, current_offset + 1)
         ])
         btn = []
@@ -452,7 +455,7 @@ async def lang_search(client: Client, query: CallbackQuery):
 
     if settings.get("link"):
         links = "".join([
-            f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>[{get_size(f['file_size'])}] {' '.join(filter(lambda x: not any(x.startswith(p) for p in ['[', '@', 'www.']), f['file_name'].split()))}</a></b>"
+            f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>[{get_size(f['file_size'])}] {' '.join(filter(lambda x: not any(x.startswith(p) for p in ['[', '@', 'www.']), get_display_name(f).split()))}</a></b>"
             for i, f in enumerate(page_files, current_offset + 1)
         ])
         btn = []
@@ -1218,7 +1221,7 @@ async def auto_filter(client, msg, spoll=False):
     del_msg = f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>" if settings.get("auto_delete") else ""
     if settings.get("link"):
         links = "".join([
-            f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{message.chat.id}_{f['_id']}>[{get_size(f['file_size'])}] {formate_file_name(f['file_name'])}</a></b>"
+            f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{message.chat.id}_{f['_id']}>[{get_size(f['file_size'])}] {formate_file_name(get_display_name(f))}</a></b>"
             for i, f in enumerate(files, 1)
         ])
         btn = []
