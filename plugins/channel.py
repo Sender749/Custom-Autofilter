@@ -270,7 +270,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
         "timestamp": datetime.now(),
         "tag": media_info["tag"],
         "season": media_info["season"],
-        "episode": media_info["episode"]
+        "episode": media_info["episode"],
         "source_channel": source_chat.username
             if source_chat.username
             else f"c/{str(source_chat.id)[4:]}"
@@ -516,4 +516,5 @@ def generate_movie_message(movie_doc, base_name):
         rating=movie_doc.get("rating", "N/A"),
         search_link=temp.B_LINK
     )
+
 
