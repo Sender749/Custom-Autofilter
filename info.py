@@ -18,13 +18,13 @@ def is_valid_ip(ip):
 
 # Main Variables 
 
-API_ID = int(environ.get('API_ID', ''))
-API_HASH = environ.get('API_HASH', '')
+API_ID = int(environ.get('API_ID', '25208597'))
+API_HASH = environ.get('API_HASH', 'e99c3c5693d6d23a143b6ce760b7a6de')
 BOT_TOKEN = environ.get('BOT_TOKEN', '')
-ADMINS = [int(admin) if id_pattern.search(admin) else admin for admin in environ.get('ADMINS', '').split()]
-USERNAME = environ.get('USERNAME', "https://telegram.me/Silicon_Official")
-LOG_CHANNEL = int(environ.get('LOG_CHANNEL', ''))
-MOVIE_GROUP_LINK = environ.get('MOVIE_GROUP_LINK', 'https://t.me/LuciferCinema')
+ADMINS = [int(admin) if id_pattern.search(admin) else admin for admin in environ.get('ADMINS', '6541030917').split()]
+USERNAME = environ.get('USERNAME', "https://telegram.me/Navex_69")
+LOG_CHANNEL = int(environ.get('LOG_CHANNEL', '-1002262450769'))
+MOVIE_GROUP_LINK = environ.get('MOVIE_GROUP_LINK', 'https://t.me/Navex_Movies')
 
 # Pics 
 
@@ -39,29 +39,29 @@ FILES_LIMIT = int(environ.get("FREE_FILES", "3")) #No. of File User Gets In Free
 
 # Database Settings
 
-DATABASE_URI = environ.get('DATABASE_URI', "mongodb+srv://@cluster0.mongodb.net/?retryWrites=true&w=majority")
-FILES_DATABASE_URL = environ.get('FILES_DATABASE_URL', "mongodb+srv://@cluster0.mongodb.net/?retryWrites=true&w=majority") # For Files
-SECOND_FILES_DATABASE_URL = environ.get('SECOND_FILES_DATABASE_URL', "") # 2nd DB For Files
-DATABASE_NAME = environ.get('DATABASE_NAME', "Silicon")
-COLLECTION_NAME = environ.get('COLLECTION_NAME', 'Silicon_Files')
+DATABASE_URI = environ.get('DATABASE_URI', "mongodb+srv://gd3251791:tvTkKkoJFybHhB5w@cluster0.b2a0n.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+FILES_DATABASE_URL = environ.get('FILES_DATABASE_URL', "mongodb+srv://gd3251791:tvTkKkoJFybHhB5w@cluster0.b2a0n.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0") # For Files
+SECOND_FILES_DATABASE_URL = environ.get('SECOND_FILES_DATABASE_URL', "mongodb+srv://gd3251791:tvTkKkoJFybHhB5w@cluster0.b2a0n.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0") # 2nd DB For Files
+DATABASE_NAME = environ.get('DATABASE_NAME', "Cluster0")
+COLLECTION_NAME = environ.get('COLLECTION_NAME', 'navex')
 
 # Verify/Shortlink Settings 
 
 IS_VERIFY = is_enabled('IS_VERIFY', True)
 LOG_VR_CHANNEL = int(environ.get('LOG_VR_CHANNEL', ''))
 LOG_API_CHANNEL = int(environ.get('LOG_API_CHANNEL', ''))
-TUTORIAL = environ.get("TUTORIAL", "https://t.me/Silicon_Bot_Update")
-TUTORIAL2 = environ.get("TUTORIAL2", "https://t.me/Silicon_Bot_Update")
-TUTORIAL3 = environ.get("TUTORIAL3", "https://t.me/Silicon_Bot_Update")
+TUTORIAL = environ.get("TUTORIAL", "https://t.me/Navexdisscussion/33")
+TUTORIAL2 = environ.get("TUTORIAL2", "https://t.me/Navexdisscussion/33")
+TUTORIAL3 = environ.get("TUTORIAL3", "https://t.me/Navexdisscussion/33")
 VERIFY_IMG = environ.get("VERIFY_IMG", "https://graph.org/file/1669ab9af68eaa62c3ca4.jpg")
-SHORTENER_API = environ.get("SHORTENER_API", "5bb6e402dd86fb8774690a5f4a65d2a2c0c04877")
-SHORTENER_WEBSITE = environ.get("SHORTENER_WEBSITE", 'shortslink.in')
-SHORTENER_API2 = environ.get("SHORTENER_API2", "41a89e7a1f16e7dbec0ee52d743f3b5a38a09613")
-SHORTENER_WEBSITE2 = environ.get("SHORTENER_WEBSITE2", 'shortslink2.com')
-SHORTENER_API3 = environ.get("SHORTENER_API3", "f287e7e9b1a23c34f542f77787d39607cae36a4d")
-SHORTENER_WEBSITE3 = environ.get("SHORTENER_WEBSITE3", 'shortslink3.online')
-TWO_VERIFY_GAP = int(environ.get('TWO_VERIFY_GAP', "14400"))
-THREE_VERIFY_GAP = int(environ.get('THREE_VERIFY_GAP', "14400"))
+SHORTENER_API = environ.get("SHORTENER_API", "fb4812435a09dcca63276a47da3c8ac5c23239ef")
+SHORTENER_WEBSITE = environ.get("SHORTENER_WEBSITE", 'instantlinks.co')
+SHORTENER_API2 = environ.get("SHORTENER_API2", "fb4812435a09dcca63276a47da3c8ac5c23239ef")
+SHORTENER_WEBSITE2 = environ.get("SHORTENER_WEBSITE2", 'instantlinks.co')
+SHORTENER_API3 = environ.get("SHORTENER_API3", "fb4812435a09dcca63276a47da3c8ac5c23239ef")
+SHORTENER_WEBSITE3 = environ.get("SHORTENER_WEBSITE3", 'instantlinks.co')
+TWO_VERIFY_GAP = int(environ.get('TWO_VERIFY_GAP', "14400")) #in seconds
+THREE_VERIFY_GAP = int(environ.get('THREE_VERIFY_GAP', "14400")) #in seconds
 
 # Force Subscribe Settings 
 
@@ -72,16 +72,16 @@ AUTH_CHANNELS = [int(ch) for ch in auth_channels.split() if ch and id_pattern.ma
 
 # Channels
 
-SUPPORT_GROUP = int(environ.get('SUPPORT_GROUP', '-1001816697837'))
-request_channel = environ.get('REQUEST_CHANNEL', '-1002470027489')
+SUPPORT_GROUP = int(environ.get('SUPPORT_GROUP', '-1003136895050'))
+request_channel = environ.get('REQUEST_CHANNEL', '-1003136895050')
 REQUEST_CHANNEL = int(request_channel) if request_channel and id_pattern.search(request_channel) else None
 
 # Movie Update Notification Settings/ Auto Index Settings
 
 MOVIE_UPDATE_NOTIFICATION = bool(environ.get('MOVIE_UPDATE_NOTIFICATION', False))  # Notification On (True) / Off (False)
-MOVIE_UPDATE_CHANNEL = int(environ.get('MOVIE_UPDATE_CHANNEL', ''))  # Notification of sent to your channel
-CHANNELS = [int(ch) if id_pattern.search(ch) else ch for ch in environ.get('CHANNELS', '').split()] # Auto Index Channel
-DELETE_CHANNELS = int(environ.get('DELETE_CHANNELS','')) # Channel to delete file from DB
+MOVIE_UPDATE_CHANNEL = int(environ.get('MOVIE_UPDATE_CHANNEL', '-1003136895050'))  # Notification of sent to your channel
+CHANNELS = [int(ch) if id_pattern.search(ch) else ch for ch in environ.get('CHANNELS', '-1002445793312').split()] # Auto Index Channel
+DELETE_CHANNELS = int(environ.get('DELETE_CHANNELS','-1003136895050')) # Channel to delete file from DB
 IMAGE_FETCH = bool(environ.get('IMAGE_FETCH', True))  # On (True) / Off (False)
 LINK_PREVIEW = bool(environ.get('LINK_PREVIEW', False)) # Shows link preview in notification msg instead of image
 ABOVE_PREVIEW = bool(environ.get('ABOVE_PREVIEW', True)) # Shows link preview above the text in notification msg if True else below the msg
