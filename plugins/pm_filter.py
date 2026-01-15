@@ -1437,8 +1437,37 @@ async def silicon_spell_check(message):
     except:
         pass
 
+_TITLE_CACHE = {
+    "data": None,
+    "time": 0
+}
+_TITLE_CACHE_TTL = 600   # 10 minutes
+
+def get_all_indexed_titles():
+    now = time.time()
+    if _TITLE_CACHE["data"] and (now - _TITLE_CACHE["time"] < _TITLE_CACHE_TTL):
+        return _TITLE_CACHE["data"]
+    titles = set()
+    try:
+        titles.update(collection.distinct("file_name"))
+    except Exception:
+        pass
+    if is_second_db_configured():
+        try:
+            titles.update(second_collection.distinct("file_name"))
+        except Exception:
+            pass
+    cleaned = {
+        re.sub(r"\s+", " ", t).strip()
+        for t in titles
+        if isinstance(t, str) and len(t) > 2
+    }
+    _TITLE_CACHE["data"] = list(cleaned)
+    _TITLE_CACHE["time"] = now
+    return _TITLE_CACHE["data"]
+
 async def silicon_suggestion_handler(client, msg, search):
-    indexed_titles = silicondb.get_all_titles()
+    indexed_titles = get_all_indexed_titles()
     suggestions = generate_suggestions(
         search,
         indexed_titles,
