@@ -9,10 +9,9 @@ from pymongo.errors import DuplicateKeyError, OperationFailure
 from info import USE_CAPTION_FILTER, FILES_DATABASE_URL, SECOND_FILES_DATABASE_URL, DATABASE_NAME, COLLECTION_NAME, MAX_BTN
 
 logger = logging.getLogger(__name__)
-client = AsyncIOMotorClient(FILES_DATABASE_URL)
-mydb = client[DATABASE_NAME]
-instance = Instance.from_db(mydb)
-filter_words_collection = mydb["filter_words"]
+async_client = AsyncIOMotorClient(FILES_DATABASE_URL)
+async_db = async_client[DATABASE_NAME]
+filter_words_collection = async_db["filter_words"]
 
 client = MongoClient(FILES_DATABASE_URL)
 db = client[DATABASE_NAME]
@@ -85,6 +84,13 @@ async def save_file(media):
         else:
             logger.error(f'your FILES_DATABASE_URL is already full, add SECOND_FILES_DATABASE_URL')
             return 'err'
+
+def clean_query(query, filter_words):
+    if not query or not filter_words:
+        return query
+    pattern = r'\b(?:' + '|'.join(map(re.escape, filter_words)) + r')\b'
+    cleaned = re.sub(pattern, '', query, flags=re.IGNORECASE)
+    return ' '.join(cleaned.split()).strip()
 
 async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
     query = str(query).strip()
