@@ -19,6 +19,7 @@ import base64
 from info import *
 
 logger = logging.getLogger(__name__)
+LOADING_STICKER = "CAACAgUAAxkBAAEB-loading-sticker-id"
 
 @Client.on_message(filters.command("start") & filters.incoming)
 async def start(client: Client, message): 
@@ -166,7 +167,12 @@ async def start(client: Client, message):
         pre, grp_id, file_id = data.split('_', 2)
     except ValueError:
         pre, grp_id, file_id = "", 0, data
-
+    loading = None
+    if data and (data.startswith("file_") or data.startswith("allfiles")):
+        try:
+            loading = await message.reply_sticker(LOADING_STICKER)
+        except:
+            loading = None
     if not await db.has_premium_access(message.from_user.id):
         try:
             btn = []
@@ -201,6 +207,11 @@ async def start(client: Client, message):
                     "🛑 ʏᴏᴜ ᴍᴜsᴛ ᴊᴏɪɴ ᴛʜᴇ ʀᴇǫᴜɪʀᴇᴅ ᴄʜᴀɴɴᴇʟs ᴛᴏ ᴄᴏɴᴛɪɴᴜᴇ.\n"
                     "👉 ᴊᴏɪɴ ᴀʟʟ ᴛʜᴇ ʙᴇʟᴏᴡ ᴄʜᴀɴɴᴇʟs ᴀɴᴅ ᴛʀʏ ᴀɢᴀɪɴ."
                 )
+                if loading:
+                    try:
+                        await loading.delete()
+                    except:
+                        pass
                 await message.reply_photo(
                     photo=photo,
                     caption=caption,
@@ -239,6 +250,11 @@ async def start(client: Client, message):
                         pre, file_id = (base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))).decode("ascii").split("_", 1)
                     except:
                         pass
+                    if loading:
+                        try:
+                            await loading.delete()
+                        except:
+                            pass
                     return await message.reply('<b>⚠️ ᴀʟʟ ꜰɪʟᴇs ɴᴏᴛ ꜰᴏᴜɴᴅ ⚠️</b>')
 
                 if isinstance(files_, list) and len(files_) > 0:
@@ -246,6 +262,11 @@ async def start(client: Client, message):
                 elif isinstance(files_, dict):
                     files = files_
                 else:
+                    if loading:
+                        try:
+                            await loading.delete()
+                        except:
+                            pass
                     return await message.reply('<b>⚠️ ᴀʟʟ ꜰɪʟᴇs ɴᴏᴛ ꜰᴏᴜɴᴅ ⚠️</b>')
 
                 settings = await get_settings(grp_id)
@@ -265,6 +286,11 @@ async def start(client: Client, message):
                     caption=f_caption,
                     reply_markup=InlineKeyboardMarkup(btn)
                 )
+                if loading:
+                    try:
+                        await loading.delete()
+                    except:
+                        pass
 
                 time_text = f'{FILE_AUTO_DEL_TIMER / 60} ᴍɪɴᴜᴛᴇs' if FILE_AUTO_DEL_TIMER >= 60 else f'{FILE_AUTO_DEL_TIMER} sᴇᴄᴏɴᴅs'
                 delCap = f"<b>ʏᴏᴜʀ ғɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀғᴛᴇʀ {time_text} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ᴠɪᴏʟᴀᴛɪᴏɴs!</b>"
@@ -291,7 +317,11 @@ async def start(client: Client, message):
             ]
 
             msg = script.THIRDT_VERIFICATION_TEXT if await db.user_verified(user_id) else (script.SECOND_VERIFICATION_TEXT if is_second_shortener else script.VERIFICATION_TEXT)
-
+            if loading:
+                try:
+                    await loading.delete()
+                except:
+                    pass
             d = await m.reply_text(
                 text=msg.format(message.from_user.mention, get_status()),
                 protect_content=False,
@@ -328,6 +358,11 @@ async def start(client: Client, message):
                 caption=f_caption,
                 reply_markup=InlineKeyboardMarkup(btn)
              )
+            if loading:
+                try:
+                    await loading.delete()
+                except:
+                    pass
             files_to_delete.append(toDel)
 
         time_text = f'{FILE_AUTO_DEL_TIMER / 60} ᴍɪɴᴜᴛᴇs' if FILE_AUTO_DEL_TIMER >= 60 else f'{FILE_AUTO_DEL_TIMER} sᴇᴄᴏɴᴅs'
@@ -354,6 +389,11 @@ async def start(client: Client, message):
             pre, file_id = (base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))).decode("ascii").split("_", 1)
         except:
             pass
+        if loading:
+            try:
+                await loading.delete()
+            except:
+                pass
         return await message.reply('<b>⚠️ ᴀʟʟ ꜰɪʟᴇs ɴᴏᴛ ꜰᴏᴜɴᴅ ⚠️</b>')
 
     if isinstance(files_, list) and len(files_) > 0:
@@ -361,6 +401,11 @@ async def start(client: Client, message):
     elif isinstance(files_, dict):
         files = files_
     else:
+        if loading:
+            try:
+                await loading.delete()
+            except:
+                pass
         return await message.reply('<b>⚠️ ᴀʟʟ ꜰɪʟᴇs ɴᴏᴛ ꜰᴏᴜɴᴅ ⚠️</b>')
 
     settings = await get_settings(grp_id)
@@ -377,7 +422,11 @@ async def start(client: Client, message):
         caption=f_caption,
         reply_markup=InlineKeyboardMarkup(btn)
     )
-
+    if loading:
+        try:
+            await loading.delete()
+        except:
+            pass
     time_text = f'{FILE_AUTO_DEL_TIMER / 60} ᴍɪɴᴜᴛᴇs' if FILE_AUTO_DEL_TIMER >= 60 else f'{FILE_AUTO_DEL_TIMER} sᴇᴄᴏɴᴅs'
     delCap = f"<b>ʏᴏᴜʀ ғɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀғᴛᴇʀ {time_text} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ᴠɪᴏʟᴀᴛɪᴏɴs!</b>"
     afterDelCap = f"<b>ʏᴏᴜʀ ғɪʟᴇ ɪs ᴅᴇʟᴇᴛᴇᴅ ᴀғᴛᴇʀ {time_text} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ᴠɪᴏʟᴀᴛɪᴏɴs!</b>"
