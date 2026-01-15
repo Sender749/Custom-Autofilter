@@ -5,6 +5,7 @@ from pyrogram.errors.exceptions.bad_request_400 import MediaEmpty, PhotoInvalidD
 from Script import script
 import pyrogram
 from info import *
+from difflib import get_close_matches
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto, ChatPermissions, ReplyKeyboardMarkup
 from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait, UserIsBlocked, MessageNotModified, PeerIdInvalid, ChatAdminRequired
@@ -39,6 +40,16 @@ async def pm_search(client, message):
         return await message.reply_text('<b><i>ᴀᴜᴛᴏ ꜰɪʟᴛᴇʀ ᴡᴀs ᴅɪsᴀʙʟᴇᴅ!</i></b>')
     await auto_filter(client, message)
 
+def generate_suggestions(query, indexed_titles, limit=8):
+    query = query.lower().strip()
+    matches = get_close_matches(
+        query,
+        indexed_titles,
+        n=limit,
+        cutoff=0.45
+    )
+    return list(dict.fromkeys(matches)) 
+    
 def get_display_name(file: dict) -> str:
     caption = file.get("caption")
     if caption and caption.strip():
@@ -1181,6 +1192,24 @@ async def ai_spell_check(wrong_name):
         movie_list.remove(movie)
     return
 
+def build_suggestion_buttons(suggestions, query):
+    buttons = []
+    for title in suggestions:
+        buttons.append([
+            InlineKeyboardButton(
+                text=title.title(),
+                callback_data=f"suggest_search#{title}"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton("🔎 Google Search", url=f"https://www.google.com/search?q={query}")
+    ])
+    buttons.append([
+        InlineKeyboardButton("📩 Request to Admin", callback_data=f"force_request#{query}")
+    ])
+    return InlineKeyboardMarkup(buttons)
+
 async def auto_filter(client, msg, spoll=False):
     if not spoll:
         message = msg
@@ -1406,3 +1435,25 @@ async def silicon_spell_check(message):
         await message.delete()
     except:
         pass
+
+@Client.on_callback_query(filters.regex(r"^suggest_search#"))
+async def suggestion_search(client, callback):
+    title = callback.data.split("#", 1)[1]
+    callback.message.text = title
+    await auto_filter(client, callback.message)
+
+@Client.on_callback_query(filters.regex(r"^force_request#"))
+async def force_request(client, callback):
+    query = callback.data.split("#", 1)[1]
+    user = callback.from_user
+    await client.send_message(
+        REQUEST_CHANNEL,
+        script.REQUEST_TXT.format(user.mention, user.id, query),
+        parse_mode=enums.ParseMode.HTML
+    )
+    await callback.message.reply_text(
+        script.AUTO_REQUEST_SENT.format(query, user.mention, user.id),
+        parse_mode=enums.ParseMode.HTML
+    )
+    await callback.message.delete()
+
