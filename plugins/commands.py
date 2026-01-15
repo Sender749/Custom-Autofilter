@@ -48,12 +48,7 @@ async def start(client: Client, message):
             [
                 InlineKeyboardButton('• ꜰᴇᴀᴛᴜʀᴇs', callback_data='features'),
                 InlineKeyboardButton('• ᴜᴘɢʀᴀᴅᴇ', callback_data='premium')
-            ],
-            [
-                InlineKeyboardButton('• ᴛᴏᴘ', callback_data='top_search'),
-                InlineKeyboardButton('• ᴀʙᴏᴜᴛ', callback_data='about')
-            ],
-            [InlineKeyboardButton('• ᴇᴀʀɴ ᴍᴏɴᴇʏ ᴡɪᴛʜ ʙᴏᴛ •', callback_data='earn')]
+            ]
         ]
 
     if sili and sili.get('MAINTENANCE_MODE', False):
