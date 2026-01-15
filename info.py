@@ -80,7 +80,7 @@ REQUEST_CHANNEL = int(request_channel) if request_channel and id_pattern.search(
 
 # Not Found Handling
 NOT_FOUND_FILE_CHANNEL = int(environ.get("NOT_FOUND_FILE_CHANNEL", "-1003136895050"))
-SUGGESTION_TIMEOUT = int(environ.get("SUGGESTION_TIMEOUT", "10"))  # seconds
+SUGGESTION_TIMEOUT = int(environ.get("SUGGESTION_TIMEOUT", "20"))  # seconds
 MAX_SUGGESTIONS = int(environ.get("MAX_SUGGESTIONS", "8"))
 MOVIE_UPDATE_NOTIFICATION = bool(environ.get('MOVIE_UPDATE_NOTIFICATION', False))  # Notification On (True) / Off (False)
 MOVIE_UPDATE_CHANNEL = int(environ.get('MOVIE_UPDATE_CHANNEL', '-1003136895050'))  # Notification of sent to your channel
