@@ -255,7 +255,7 @@ async def process_and_send_update(bot, filename, caption, source_chat):
     except Exception as e:
         logger.exception("Processing failed: %s", e)
 
-async def _process_with_lock(bot, filename, caption, media_info, base_name, processed):
+async def _process_with_lock(bot, filename, caption, media_info, base_name, processed, source_chat):
     if not hasattr(db, 'movie_updates'):
         db.movie_updates = db.db.movie_updates
     movie_doc = await db.movie_updates.find_one({"_id": base_name})
@@ -522,6 +522,7 @@ def generate_movie_message(movie_doc, base_name):
         rating=movie_doc.get("rating", "N/A"),
         search_link=temp.B_LINK
     )
+
 
 
 
