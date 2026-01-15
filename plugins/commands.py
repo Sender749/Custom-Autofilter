@@ -184,7 +184,12 @@ async def start(client: Client, message):
 
             settings = await get_settings(chat)
             fsub_channels = list(dict.fromkeys((settings.get('fsub', []) if settings else []) + AUTH_CHANNELS))
-            if not fsub_channels and not AUTH_REQ_CHANNELS:           
+            if not fsub_channels and not AUTH_REQ_CHANNELS:
+                if loading:
+                    try:
+                        await loading.delete()
+                    except:
+                        pass
                 return
             if fsub_channels:
                 btn += await is_subscribed(client, message.from_user.id, fsub_channels)
@@ -221,6 +226,11 @@ async def start(client: Client, message):
                 return
 
         except Exception as e:
+            if loading:
+                try:
+                    await loading.delete()
+                except:
+                    pass
             await log_error(client, f"❗️ Force Sub Error:\n\n{repr(e)}")
             logger.error(f"❗️ Force Sub Error:\n\n{repr(e)}")
 
