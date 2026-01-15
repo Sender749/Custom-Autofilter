@@ -1207,7 +1207,7 @@ def build_suggestion_buttons(suggestions, query):
         InlineKeyboardButton("🔎 Google Search", url=f"https://www.google.com/search?q={query}")
     ])
     buttons.append([
-        InlineKeyboardButton("📩 Request to Admin", callback_data=f"force_request#{query}")
+        InlineKeyboardButton("⚠️ ʀᴇᴏ̨ᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ ⚠️", callback_data=f"req_admin#{search}#{query.from_user.id}")
     ])
     return InlineKeyboardMarkup(buttons)
 
@@ -1396,6 +1396,20 @@ async def auto_filter(client, msg, spoll=False):
     if k and settings.get("auto_delete"):
         asyncio.create_task(handle_auto_delete(k))
 
+async def get_internet_suggestions(query: str, limit: int = 8):
+    try:
+        results = await silicondb.get_ai_spell_suggestions(query)
+    except Exception:
+        results = []
+    if not results:
+        return []
+    cleaned = []
+    for r in results:
+        title = r.strip()
+        if title and title.lower() != query.lower():
+            cleaned.append(title)
+    return cleaned[:limit]
+
 async def silicon_spell_check(message):
     mv_id = message.id
     search = message.text
@@ -1467,19 +1481,18 @@ def get_all_indexed_titles():
     return _TITLE_CACHE["data"]
 
 async def silicon_suggestion_handler(client, msg, search):
-    indexed_titles = get_all_indexed_titles()
-    suggestions = generate_suggestions(
+    internet_suggestions = await get_internet_suggestions(
         search,
-        indexed_titles,
-        limit=MAX_SUGGESTIONS
+        MAX_SUGGESTIONS
     )
-    suggestions = [search] + [
-        s for s in suggestions if s.lower() != search.lower()
-    ]
+    suggestions = [search]
+    for s in internet_suggestions:
+        if s.lower() != search.lower():
+            suggestions.append(s)
+    suggestions = suggestions[:MAX_SUGGESTIONS]
     markup = build_suggestion_buttons(suggestions, search)
-
     sug_msg = await msg.reply_text(
-        script.SUGGESTION_HEADER.format(search),
+        script.CUDNT_FND.format(msg.from_user.mention),
         reply_markup=markup
     )
     SUGGESTION_TRACK[sug_msg.id] = {
