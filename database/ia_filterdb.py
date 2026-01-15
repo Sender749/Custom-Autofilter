@@ -87,6 +87,8 @@ async def save_file(media):
 
 async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
     query = str(query).strip()
+    filter_words = await get_filter_words()
+    query = clean_query(query, filter_words)
     if not query:
         raw_pattern = '.'
     elif ' ' not in query:
