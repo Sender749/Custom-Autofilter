@@ -1461,6 +1461,30 @@ async def silicon_suggestion_handler(client, msg, search):
     }
     asyncio.create_task(handle_suggestion_timeout(client, sug_msg))
 
+async def handle_suggestion_timeout(client, message):
+    await asyncio.sleep(SUGGESTION_TIMEOUT)
+    data = SUGGESTION_TRACK.pop(message.id, None)
+    if not data:
+        return  
+    try:
+        await message.delete()
+    except:
+        pass
+    user_mention = (
+        f"<a href='tg://user?id={data['user_id']}'>@{data['username']}</a>"
+        if data.get("username")
+        else f"<a href='tg://user?id={data['user_id']}'>User</a>"
+    )
+    await client.send_message(
+        NOT_FOUND_FILE_CHANNEL,
+        script.NOT_FOUND_LOG.format(
+            user_mention,
+            f"<code>{data['user_id']}</code>",
+            f"<code>{data['query']}</code>"
+        ),
+        parse_mode=enums.ParseMode.HTML
+    )
+
 @Client.on_callback_query(filters.regex(r"^suggest_search#"))
 async def suggestion_search(client, callback):
     title = callback.data.split("#", 1)[1]
