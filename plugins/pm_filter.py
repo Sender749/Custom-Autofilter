@@ -1204,10 +1204,13 @@ def build_suggestion_buttons(suggestions, query):
         ])
 
     buttons.append([
-        InlineKeyboardButton("🔎 Google Search", url=f"https://www.google.com/search?q={query}")
+        InlineKeyboardButton("🔎 Google Search", url=f"https://www.google.com/search?q={search.replace(' ', '+')}")
     ])
     buttons.append([
-        InlineKeyboardButton("⚠️ ʀᴇᴏ̨ᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ ⚠️", callback_data=f"req_admin#{search}#{query.from_user.id}")
+        InlineKeyboardButton("⚠️ ʀᴇᴏ̨ᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ ⚠️", callback_data=f"req_admin#{search}#{user_id}")
+    ])
+    buttons.append([
+        InlineKeyboardButton("🚫 ᴄʟᴏsᴇ 🚫", callback_data="close_data")
     ])
     return InlineKeyboardMarkup(buttons)
 
@@ -1490,7 +1493,7 @@ async def silicon_suggestion_handler(client, msg, search):
         if s.lower() != search.lower():
             suggestions.append(s)
     suggestions = suggestions[:MAX_SUGGESTIONS]
-    markup = build_suggestion_buttons(suggestions, search)
+    markup = build_suggestion_buttons(suggestions, search, msg.from_user.id)
     sug_msg = await msg.reply_text(
         script.CUDNT_FND.format(msg.from_user.mention),
         reply_markup=markup
