@@ -1188,7 +1188,9 @@ async def auto_filter(client, msg, spoll=False):
         chat_id = message.chat.id
         search_msg = await msg.reply_text(f'<b>🕵️ sᴇᴀʀᴄʜɪɴɢ {search}"</b>')
         settings = await get_settings(chat_id)
-        files = [], offset = 0, total_results = 0
+        files = []
+        offset = 0
+        total_results = 0
         cached_pages = get_cached_pages(search)
         if cached_pages:
             files, offset, total_results = cached_pages[0]
