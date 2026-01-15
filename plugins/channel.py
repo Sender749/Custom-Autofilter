@@ -262,10 +262,8 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
     global error_tmdb
     error_tmdb=False
     if source_chat.username:
-        channel_name = source_chat.title or source_chat.username
         channel_link = f"https://t.me/{source_chat.username}"
     else:
-        channel_name = source_chat.title or "Movie Channel"
         channel_link = f"https://t.me/c/{str(source_chat.id)[4:]}"
     file_data = {
         "filename": filename,
@@ -277,10 +275,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
         "tag": media_info["tag"],
         "season": media_info["season"],
         "episode": media_info["episode"],
-        "source_channel": {
-            "name": channel_name,
-            "link": channel_link
-        }
+        "source_channel": channel_link
     }
     if not movie_doc:
         if TMDB_POSTER:
@@ -346,14 +341,14 @@ async def send_movie_update(bot, base_name):
                 return None
 
             text = generate_movie_message(movie_doc, base_name)
-            channels = {}
+            channels = set()
             for f in movie_doc["files"]:
-                ch = f.get("source_channel")
-                if ch and isinstance(ch, dict):
-                    channels[ch["link"]] = ch["name"]
+                link = f.get("source_channel")
+                if link:
+                    channels.add(link)
             buttons = [
-                [InlineKeyboardButton(f"📢 {name}", url=link)]
-                for link, name in sorted(channels.items(), key=lambda x: x[1].lower())
+                [InlineKeyboardButton("✨Get Direct File✨", url=link)]
+                for link in sorted(channels)
             ]
             reply_markup = InlineKeyboardMarkup(buttons)
             if movie_doc.get("poster_url") and not LINK_PREVIEW:
@@ -398,14 +393,14 @@ async def update_movie_message(bot, base_name):
             return
 
         text = generate_movie_message(movie_doc, base_name)
-        channels = {}
+        channels = set()
         for f in movie_doc["files"]:
-            ch = f.get("source_channel")
-            if ch and isinstance(ch, dict):
-                channels[ch["link"]] = ch["name"]
+            link = f.get("source_channel")
+            if link:
+                 channels.add(link)
         buttons = [
-            [InlineKeyboardButton(f"📢 {name}", url=link)]
-            for link, name in sorted(channels.items(), key=lambda x: x[1].lower())
+            [InlineKeyboardButton("✨ Get Direct File ✨", url=link)]
+            for link in sorted(channels)
         ]
         reply_markup = InlineKeyboardMarkup(buttons)
         message_id = movie_doc.get("message_id")
@@ -531,6 +526,7 @@ def generate_movie_message(movie_doc, base_name):
         rating=movie_doc.get("rating", "N/A"),
         search_link=temp.B_LINK
     )
+
 
 
 
