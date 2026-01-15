@@ -28,6 +28,7 @@ CAP = {}
 PAGE_CACHE = {}
 PAGE_CACHE_TTL = 300  # 5 minutes
 PAGE_PREFETCH = 3     # current + next 2 pages
+SUGGESTION_TRACK = {}
 
 @Client.on_message(filters.private & filters.text & filters.incoming)
 async def pm_search(client, message):
@@ -1251,7 +1252,7 @@ async def auto_filter(client, msg, spoll=False):
                     await ai_sts.delete()
                     return await auto_filter(client, msg)
                 await ai_sts.delete()
-                return await silicon_spell_check(msg)
+                return await silicon_suggestion_handler(client, msg, search)
             return
     else:
         settings = await get_settings(msg.message.chat.id)
@@ -1435,6 +1436,30 @@ async def silicon_spell_check(message):
         await message.delete()
     except:
         pass
+
+async def silicon_suggestion_handler(client, msg, search):
+    indexed_titles = silicondb.get_all_titles()
+    suggestions = generate_suggestions(
+        search,
+        indexed_titles,
+        limit=MAX_SUGGESTIONS
+    )
+    suggestions = [search] + [
+        s for s in suggestions if s.lower() != search.lower()
+    ]
+    markup = build_suggestion_buttons(suggestions, search)
+
+    sug_msg = await msg.reply_text(
+        script.SUGGESTION_HEADER.format(search),
+        reply_markup=markup
+    )
+    SUGGESTION_TRACK[sug_msg.id] = {
+        "user_id": msg.from_user.id,
+        "username": msg.from_user.username,
+        "query": search,
+        "chat_id": msg.chat.id
+    }
+    asyncio.create_task(handle_suggestion_timeout(client, sug_msg))
 
 @Client.on_callback_query(filters.regex(r"^suggest_search#"))
 async def suggestion_search(client, callback):
