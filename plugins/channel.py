@@ -106,7 +106,7 @@ async def media_handler(bot, message):
         return
     try:
         if await db.movie_update_status(bot.me.id):
-            await process_and_send_update(bot, media.file_name, media.caption)
+            await process_and_send_update(bot, media.file_name, media.caption, source_chat=message.chat)
     except Exception:
         logger.exception("Error processing media")
 
@@ -261,6 +261,12 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
     movie_doc = await db.movie_updates.find_one({"_id": base_name})
     global error_tmdb
     error_tmdb=False
+    if source_chat.username:
+        channel_name = source_chat.title or source_chat.username
+        channel_link = f"https://t.me/{source_chat.username}"
+    else:
+        channel_name = source_chat.title or "Movie Channel"
+        channel_link = f"https://t.me/c/{str(source_chat.id)[4:]}"
     file_data = {
         "filename": filename,
         "processed": processed,
@@ -271,9 +277,10 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
         "tag": media_info["tag"],
         "season": media_info["season"],
         "episode": media_info["episode"],
-        "source_channel": source_chat.username
-            if source_chat.username
-            else f"c/{str(source_chat.id)[4:]}"
+        "source_channel": {
+            "name": channel_name,
+            "link": channel_link
+        }
     }
     if not movie_doc:
         if TMDB_POSTER:
@@ -339,13 +346,14 @@ async def send_movie_update(bot, base_name):
                 return None
 
             text = generate_movie_message(movie_doc, base_name)
-            channels = set()
+            channels = {}
             for f in movie_doc["files"]:
-                if f.get("source_channel"):
-                    channels.add(f["source_channel"])
+                ch = f.get("source_channel")
+                if ch and isinstance(ch, dict):
+                    channels[ch["link"]] = ch["name"]
             buttons = [
-                [InlineKeyboardButton(f"📢 {ch}", url=f"https://t.me/{ch}")]
-                for ch in sorted(channels)
+                [InlineKeyboardButton(f"📢 {name}", url=link)]
+                for link, name in sorted(channels.items(), key=lambda x: x[1].lower())
             ]
             reply_markup = InlineKeyboardMarkup(buttons)
             if movie_doc.get("poster_url") and not LINK_PREVIEW:
@@ -390,13 +398,14 @@ async def update_movie_message(bot, base_name):
             return
 
         text = generate_movie_message(movie_doc, base_name)
-        channels = set()
+        channels = {}
         for f in movie_doc["files"]:
-            if f.get("source_channel"):
-                channels.add(f["source_channel"])
+            ch = f.get("source_channel")
+            if ch and isinstance(ch, dict):
+                channels[ch["link"]] = ch["name"]
         buttons = [
-            [InlineKeyboardButton(f"📢 {ch}", url=f"https://t.me/{ch}")]
-            for ch in sorted(channels)
+            [InlineKeyboardButton(f"📢 {name}", url=link)]
+            for link, name in sorted(channels.items(), key=lambda x: x[1].lower())
         ]
         reply_markup = InlineKeyboardMarkup(buttons)
         message_id = movie_doc.get("message_id")
@@ -522,6 +531,7 @@ def generate_movie_message(movie_doc, base_name):
         rating=movie_doc.get("rating", "N/A"),
         search_link=temp.B_LINK
     )
+
 
 
 
