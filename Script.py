@@ -6,6 +6,25 @@ class script(object):
     TELE_TXT = """<b>/upload - sᴇɴᴅ ᴍᴇ ᴘɪᴄᴛᴜʀᴇ ᴏʀ ᴠɪᴅᴇᴏ ᴜɴᴅᴇʀ (𝟻ᴍʙ)
 
 ɴᴏᴛᴇ - ᴛʜɪs ᴄᴏᴍᴍᴀɴᴅ ᴡᴏʀᴋ ɪɴ ʙᴏᴛʜ ɢʀᴏᴜᴘs ᴀɴᴅ ʙᴏᴛ ᴘᴍ</b>"""
+    SUGGESTION_HEADER = """<b>❌ No exact match found for:
+<code>{}</code>
+
+🤔 Did you mean one of these?</b>"""
+
+    AUTO_REQUEST_SENT = """<b>📩 Request sent automatically!
+
+🎬 Title: <code>{}</code>
+👤 Requested by: {}
+🆔 User ID: <code>{}</code>
+
+⏳ Please wait, admin will upload it soon.</b>"""
+
+    NOT_FOUND_LOG = """#NOT_FOUND
+
+👤 User: {}
+🆔 ID: <code>{}</code>
+🔍 Query: <code>{}</code>"""
+
 
     ADMIN_CMD_TXT = """<b>📚 ᴀᴅᴍɪɴ ᴄᴏᴍᴍᴀɴᴅꜱ</b>
 
