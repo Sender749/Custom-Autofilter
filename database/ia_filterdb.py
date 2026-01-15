@@ -8,6 +8,10 @@ from pymongo.errors import DuplicateKeyError, OperationFailure
 from info import USE_CAPTION_FILTER, FILES_DATABASE_URL, SECOND_FILES_DATABASE_URL, DATABASE_NAME, COLLECTION_NAME, MAX_BTN
 
 logger = logging.getLogger(__name__)
+client = AsyncIOMotorClient(DATABASE_URI)
+mydb = client[DATABASE_NAME]
+instance = Instance.from_db(mydb)
+filter_words_collection = mydb["filter_words"]
 
 client = MongoClient(FILES_DATABASE_URL)
 db = client[DATABASE_NAME]
