@@ -278,30 +278,3 @@ async def set_filter_words(words):
     except Exception as e:
         logger.error(f"Error setting filter words: {e}")
 
-async def smart_search(query, limit=MAX_BTN):
-    query = str(query).strip()
-    filter_words = await get_filter_words()
-    clean_q = clean_query(query, filter_words)
-    if not clean_q:
-        return [], []
-    exact_regex = re.compile(
-        r'(^|[\s\.\+\-_])' + re.escape(clean_q) + r'($|[\s\.\+\-_])',
-        flags=re.IGNORECASE
-    )
-    loose_regex = re.compile(
-        clean_q.replace(" ", ".*"),
-        flags=re.IGNORECASE
-    )
-    base_filter_exact = {'file_name': exact_regex}
-    base_filter_loose = {'file_name': loose_regex}
-    exact = list(collection.find(base_filter_exact))
-    loose = list(collection.find(base_filter_loose))
-    if SECOND_FILES_DATABASE_URL:
-        exact += list(second_collection.find(base_filter_exact))
-        loose += list(second_collection.find(base_filter_loose))
-    exact_ids = {f['_id'] for f in exact}
-    related = [f for f in loose if f['_id'] not in exact_ids]
-    exact_ranked = rank_results(clean_q, exact)
-    related_ranked = rank_results(clean_q, related)
-    return exact_ranked[:limit], related_ranked[:limit]
-
