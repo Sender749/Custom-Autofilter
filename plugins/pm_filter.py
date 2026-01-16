@@ -5,7 +5,6 @@ from pyrogram.errors.exceptions.bad_request_400 import MediaEmpty, PhotoInvalidD
 from Script import script
 import pyrogram
 from info import *
-from difflib import get_close_matches
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto, ChatPermissions, ReplyKeyboardMarkup
 from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait, UserIsBlocked, MessageNotModified, PeerIdInvalid, ChatAdminRequired
@@ -28,7 +27,6 @@ CAP = {}
 PAGE_CACHE = {}
 PAGE_CACHE_TTL = 300  # 5 minutes
 PAGE_PREFETCH = 3     # current + next 2 pages
-SUGGESTION_TRACK = {}
 
 @Client.on_message(filters.private & filters.text & filters.incoming)
 async def pm_search(client, message):
@@ -40,16 +38,6 @@ async def pm_search(client, message):
     if not sili.get('AUTO_FILTER', True) if sili else True:
         return await message.reply_text('<b><i>ᴀᴜᴛᴏ ꜰɪʟᴛᴇʀ ᴡᴀs ᴅɪsᴀʙʟᴇᴅ!</i></b>')
     await auto_filter(client, message)
-
-def generate_suggestions(query, indexed_titles, limit=8):
-    query = query.lower().strip()
-    matches = get_close_matches(
-        query,
-        indexed_titles,
-        n=limit,
-        cutoff=0.45
-    )
-    return list(dict.fromkeys(matches)) 
     
 def get_display_name(file: dict) -> str:
     caption = file.get("caption")
@@ -1193,27 +1181,6 @@ async def ai_spell_check(wrong_name):
         movie_list.remove(movie)
     return
 
-def build_suggestion_buttons(suggestions, search, user_id):
-    buttons = []
-    for title in suggestions:
-        buttons.append([
-            InlineKeyboardButton(
-                text=title.title(),
-                callback_data=f"suggest_search#{title}"
-            )
-        ])
-
-    buttons.append([
-        InlineKeyboardButton("🔎 Google Search", url=f"https://www.google.com/search?q={search.replace(' ', '+')}")
-    ])
-    buttons.append([
-        InlineKeyboardButton("⚠️ ʀᴇᴏ̨ᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ ⚠️", callback_data=f"req_admin#{search}#{user_id}")
-    ])
-    buttons.append([
-        InlineKeyboardButton("🚫 ᴄʟᴏsᴇ 🚫", callback_data="close_data")
-    ])
-    return InlineKeyboardMarkup(buttons)
-
 async def auto_filter(client, msg, spoll=False):
     if not spoll:
         message = msg
@@ -1255,7 +1222,7 @@ async def auto_filter(client, msg, spoll=False):
                     await ai_sts.delete()
                     return await auto_filter(client, msg)
                 await ai_sts.delete()
-                return await silicon_suggestion_handler(client, msg, search)
+                return await silicon_spell_check(msg)
             return
     else:
         settings = await get_settings(msg.message.chat.id)
@@ -1399,20 +1366,6 @@ async def auto_filter(client, msg, spoll=False):
     if k and settings.get("auto_delete"):
         asyncio.create_task(handle_auto_delete(k))
 
-async def get_internet_suggestions(query: str, limit: int = 8):
-    try:
-        results = await silicondb.get_ai_spell_suggestions(query)
-    except Exception:
-        results = []
-    if not results:
-        return []
-    cleaned = []
-    for r in results:
-        title = r.strip()
-        if title and title.lower() != query.lower():
-            cleaned.append(title)
-    return cleaned[:limit]
-
 async def silicon_spell_check(message):
     mv_id = message.id
     search = message.text
@@ -1453,101 +1406,3 @@ async def silicon_spell_check(message):
         await message.delete()
     except:
         pass
-
-_TITLE_CACHE = {
-    "data": None,
-    "time": 0
-}
-_TITLE_CACHE_TTL = 600   # 10 minutes
-
-def get_all_indexed_titles():
-    now = time.time()
-    if _TITLE_CACHE["data"] and (now - _TITLE_CACHE["time"] < _TITLE_CACHE_TTL):
-        return _TITLE_CACHE["data"]
-    titles = set()
-    try:
-        titles.update(collection.distinct("file_name"))
-    except Exception:
-        pass
-    if is_second_db_configured():
-        try:
-            titles.update(second_collection.distinct("file_name"))
-        except Exception:
-            pass
-    cleaned = {
-        re.sub(r"\s+", " ", t).strip()
-        for t in titles
-        if isinstance(t, str) and len(t) > 2
-    }
-    _TITLE_CACHE["data"] = list(cleaned)
-    _TITLE_CACHE["time"] = now
-    return _TITLE_CACHE["data"]
-
-async def silicon_suggestion_handler(client, msg, search):
-    internet_suggestions = await get_internet_suggestions(
-        search,
-        MAX_SUGGESTIONS
-    )
-    suggestions = [search]
-    for s in internet_suggestions:
-        if s.lower() != search.lower():
-            suggestions.append(s)
-    suggestions = suggestions[:MAX_SUGGESTIONS]
-    markup = build_suggestion_buttons(suggestions, search, msg.from_user.id)
-    sug_msg = await msg.reply_text(
-        script.CUDNT_FND.format(msg.from_user.mention),
-        reply_markup=markup
-    )
-    SUGGESTION_TRACK[sug_msg.id] = {
-        "user_id": msg.from_user.id,
-        "username": msg.from_user.username,
-        "query": search,
-        "chat_id": msg.chat.id
-    }
-    asyncio.create_task(handle_suggestion_timeout(client, sug_msg))
-
-async def handle_suggestion_timeout(client, message):
-    await asyncio.sleep(SUGGESTION_TIMEOUT)
-    data = SUGGESTION_TRACK.pop(message.id, None)
-    if not data:
-        return  
-    try:
-        await message.delete()
-    except:
-        pass
-    user_mention = (
-        f"<a href='tg://user?id={data['user_id']}'>@{data['username']}</a>"
-        if data.get("username")
-        else f"<a href='tg://user?id={data['user_id']}'>User</a>"
-    )
-    await client.send_message(
-        NOT_FOUND_FILE_CHANNEL,
-        script.NOT_FOUND_LOG.format(
-            user_mention,
-            f"<code>{data['user_id']}</code>",
-            f"<code>{data['query']}</code>"
-        ),
-        parse_mode=enums.ParseMode.HTML
-    )
-
-@Client.on_callback_query(filters.regex(r"^suggest_search#"))
-async def suggestion_search(client, callback):
-    title = callback.data.split("#", 1)[1]
-    callback.message.text = title
-    await auto_filter(client, callback.message)
-
-@Client.on_callback_query(filters.regex(r"^force_request#"))
-async def force_request(client, callback):
-    query = callback.data.split("#", 1)[1]
-    user = callback.from_user
-    await client.send_message(
-        REQUEST_CHANNEL,
-        script.REQUEST_TXT.format(user.mention, user.id, query),
-        parse_mode=enums.ParseMode.HTML
-    )
-    await callback.message.reply_text(
-        script.AUTO_REQUEST_SENT.format(query, user.mention, user.id),
-        parse_mode=enums.ParseMode.HTML
-    )
-    await callback.message.delete()
-
