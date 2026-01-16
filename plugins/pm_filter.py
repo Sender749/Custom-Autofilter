@@ -1193,7 +1193,7 @@ async def ai_spell_check(wrong_name):
         movie_list.remove(movie)
     return
 
-def build_suggestion_buttons(suggestions, query):
+def build_suggestion_buttons(suggestions, search, user_id):
     buttons = []
     for title in suggestions:
         buttons.append([
