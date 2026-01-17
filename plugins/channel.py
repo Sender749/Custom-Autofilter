@@ -104,11 +104,7 @@ async def media_handler(bot, message):
     success = await save_file(media)
     if not success:
         return
-    try:
-        if await db.movie_update_status(bot.me.id):
-            await process_and_send_update(bot, media.file_name, media.caption, source_chat=message.chat)
-    except Exception:
-        logger.exception("Error processing media")
+    return
 
 @Client.on_message(filters.chat(FETCH_MOVIE_UPDATE) & media_filter)
 async def movie_update_fetcher(bot, message):
@@ -526,6 +522,7 @@ def generate_movie_message(movie_doc, base_name):
         rating=movie_doc.get("rating", "N/A"),
         search_link=temp.B_LINK
     )
+
 
 
 
