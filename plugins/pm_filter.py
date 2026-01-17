@@ -17,7 +17,6 @@ lock = asyncio.Lock()
 import traceback
 from fuzzywuzzy import process
 import logging
-from utils import imdb_bulk_search
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)
@@ -1368,15 +1367,26 @@ async def auto_filter(client, msg, spoll=False):
         asyncio.create_task(handle_auto_delete(k))
 
 async def show_suggestions(bot, message, query):
-    suggestions = await imdb_bulk_search(query)
+    try:
+        movies = await get_poster(query, bulk=True)
+    except Exception:
+        movies = None
     buttons = []
-    if suggestions:
-        for title in suggestions[:MAX_SUGGESTIONS]:
-            buttons.append([
-                InlineKeyboardButton(text=title, callback_data=f"spelling#{title}")
-            ])
-    buttons.append([InlineKeyboardButton("🔍 ᴄʜᴇᴄᴋ sᴘᴇʟʟɪɴɢ ᴏɴ ɢᴏᴏɢʟᴇ 🔍", url=f"https://www.google.com/search?q={query.replace(' ', '+')}")],
-                [InlineKeyboardButton("📮 ʀᴇǫᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ 📮", callback_data=f"request#{query}")])
+    if movies:
+        for movie in movies[:MAX_SUGGESTIONS]:
+            title = movie.get("title")
+            if title:
+                buttons.append([
+                    InlineKeyboardButton(
+                        text=title,
+                        callback_data=f"spelling#{title}"
+                    )
+                ])
+    buttons.append([
+        InlineKeyboardButton("🔍 ᴄʜᴇᴄᴋ sᴘᴇʟʟɪɴɢ ᴏɴ ɢᴏᴏɢʟᴇ 🔍", url=f"https://www.google.com/search?q={query.replace(' ', '+')}")
+    ])
+    buttons.append([InlineKeyboardButton("📮 ʀᴇǫᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ 📮", callback_data=f"req_admin#{query}#{message.from_user.id}")
+    ])
     text = (
         f"<b>😕 I couldn't find any exact results for:</b>\n"
         f"<code>{query}</code>\n\n"
