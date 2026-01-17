@@ -1231,11 +1231,6 @@ async def auto_filter(client, msg, spoll=False):
         if not files:
             if getattr(msg, "from_suggestion", False):
                 await send_auto_request(client, message, search)
-                await message.reply_text(
-                    "<b>📩 I still couldn’t find this.\n"
-                       "Your request has been sent to admin.</b>"
-                    "Admin will upload file shorty ✨.</b>"
-                )
                 return
             if settings["spell_check"]:
                 ai_sts = await msg.reply_text('<b>👾 ᴀɪ ɪs ᴄʜᴇᴄᴋɪɴɢ ꜰᴏʀ ʏᴏᴜʀ sᴘᴇʟʟɪɴɢ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</b>')
@@ -1401,22 +1396,21 @@ async def auto_filter(client, msg, spoll=False):
 
 async def send_auto_request(bot, message, query):
     user = message.from_user
-    text = (
-        "<b>📮 AUTO REQUEST</b>\n\n"
-        f"👤 User: {user.mention}\n"
-        f"🆔 ID: <code>{user.id}</code>\n"
-        f"🎬 Title: <code>{query}</code>"
-    )
-    sent = await bot.send_message(
+    admin_buttons = [[InlineKeyboardButton("👀 View Request", url=message.link)],
+        [InlineKeyboardButton("⚙ Show Options", callback_data=f"show_options#{user.id}#{message.id}")]
+    ]
+    sent_request = await bot.send_message(
         chat_id=REQUEST_CHANNEL,
-        text=text
+        text=script.REQUEST_TXT.format(
+            user.mention,
+            user.id,
+            query
+        ),
+        reply_markup=InlineKeyboardMarkup(admin_buttons)
     )
-    await message.reply_text(
-        "<b>✅ Request sent to admin!</b>",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("✨ View Your Request ✨", url=sent.link)
-        ]])
-    )
+    user_buttons = [[InlineKeyboardButton("✨ ᴠɪᴇᴡ ʏᴏᴜʀ ʀᴇǫᴜᴇsᴛ ✨", url=sent_request.link)
+    ]]
+    await message.reply_text("<b>📩 I still couldn’t find this.\n Your request has been sent to admin.🥷\n Admin will upload file shorty ✨.</b>",reply_markup=InlineKeyboardMarkup(user_buttons))
 
 async def show_suggestions(bot, message, query):
     try:
