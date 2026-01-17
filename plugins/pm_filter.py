@@ -526,6 +526,7 @@ async def suggestion_click_handler(client, query: CallbackQuery):
         pass
     fake_msg = query.message
     fake_msg.text = title
+    fake_msg.from_suggestion = True
     await auto_filter(client, fake_msg)
     await query.answer("🔍 Searching...")
 
@@ -1228,24 +1229,32 @@ async def auto_filter(client, msg, spoll=False):
         silicondb.update_silicon_messages(message.from_user.id, message.text)
         await search_msg.delete()
         if not files:
+                if getattr(msg, "from_suggestion", False):
+                    await send_auto_request(client, message, search)
+                    await message.reply_text(
+                        "<b>📩 I still couldn’t find this.\n"
+                        "Your request has been sent to admin.</b>"
+                        "Admin will upload file shorty ✨.</b>"
+                    )
+                    return
             if settings["spell_check"]:
-                ai_sts = await msg.reply_text('<b>ᴀɪ ɪs ᴄʜᴇᴄᴋɪɴɢ ꜰᴏʀ ʏᴏᴜʀ sᴘᴇʟʟɪɴɢ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</b>')
+                ai_sts = await msg.reply_text('<b>👾 ᴀɪ ɪs ᴄʜᴇᴄᴋɪɴɢ ꜰᴏʀ ʏᴏᴜʀ sᴘᴇʟʟɪɴɢ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</b>')
                 is_misspelled = await ai_spell_check(search)
                 if is_misspelled:
-                    await ai_sts.edit(f'<b><i>ᴀɪ sᴜɢɢᴇsᴛᴇᴅ <code>{is_misspelled}</code> sᴏ ɪᴍ sᴇᴀʀᴄʜɪɴɢ ꜰᴏʀ <code>{is_misspelled}</code></i></b>')
+                    await ai_sts.edit(f'<b><i>ᴀɪ sᴜɢɢᴇsᴛᴇᴅ 👉 <code>{is_misspelled}</code> \nsᴏ ɪᴍ sᴇᴀʀᴄʜɪɴɢ ꜰᴏʀ 👉 <code>{is_misspelled}</code></i></b>')
                     await asyncio.sleep(2)
                     msg.text = is_misspelled
                     await ai_sts.delete()
                     return await auto_filter(client, msg)
                 await ai_sts.delete()
-                for data in SUGGESTION_TRACKER.values():
-                    if data["clicked"] and data["query"] == search:
-                        await send_auto_request(client, message, search)
-                        await message.reply_text(
-                            "<b>📩 Your request has been sent to admin.\n"
-                            "⏳ Please wait, it will be added soon.</b>"
-                        )
-                        return
+              #  for data in SUGGESTION_TRACKER.values():
+              #      if data["clicked"] and data["query"] == search:
+               #         await send_auto_request(client, message, search)
+               #         await message.reply_text(
+               #             "<b>📩 Your request has been sent to admin.\n"
+               #             "⏳ Please wait, it will be added soon.</b>"
+               #         )
+               #         return
                 await show_suggestions(client, msg, search)
             return
     else:
@@ -1430,7 +1439,7 @@ async def show_suggestions(bot, message, query):
             seen.add(key)
             clean_titles.append(t)
     for t in clean_titles[:MAX_SUGGESTIONS]:
-        buttons.append([InlineKeyboardButton(text=title, callback_data=f"spelling#{title}")
+        buttons.append([InlineKeyboardButton(text=t, callback_data=f"spelling#{t}")
         ])
     buttons.append([
         InlineKeyboardButton("🔍 ᴄʜᴇᴄᴋ sᴘᴇʟʟɪɴɢ ᴏɴ ɢᴏᴏɢʟᴇ 🔍", url=f"https://www.google.com/search?q={query.replace(' ', '+')}")
