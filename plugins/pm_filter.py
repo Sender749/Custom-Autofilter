@@ -28,6 +28,7 @@ PAGE_CACHE = {}
 PAGE_CACHE_TTL = 300  # 5 minutes
 PAGE_PREFETCH = 3     # current + next 2 pages
 SUGGESTION_TRACKER = {}
+WRONG_SPELL_WAIT = {}
 
 @Client.on_message(filters.private & filters.text & filters.incoming)
 async def pm_search(client, message):
@@ -969,6 +970,8 @@ async def cb_handler(client: Client, query: CallbackQuery):
         ],[
             InlineKeyboardButton("ᴜᴘʟᴏᴀᴅᴇᴅ", callback_data=f"uploaded#{user_id}#{msg_id}"),
             InlineKeyboardButton("ɴᴏᴛ ᴀᴠᴀɪʟᴀʙʟᴇ", callback_data=f"not_available#{user_id}#{msg_id}")
+        ],[
+            InlineKeyboardButton("ᴜᴘʟᴏᴀᴅᴇᴅ, ᴡʀᴏɴɢ sᴘᴇʟʟɪɴɢ", callback_data=f"uploaded_wrong#{user_id}#{msg_id}")
         ]]
         try:
             st = await client.get_chat_member(chnl_id, userid)
@@ -1123,6 +1126,25 @@ async def cb_handler(client: Client, query: CallbackQuery):
         else:
             await query.answer(script.ALRT_TXT, show_alert=True)
 
+    elif query.data.startswith("uploaded_wrong"):
+        ident, user_id, msg_id = query.data.split("#")
+        chnl_id = query.message.chat.id
+        admin_id = query.from_user.id
+        st = await client.get_chat_member(chnl_id, admin_id)
+        if st.status not in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]:
+            return await query.answer(script.ALRT_TXT, show_alert=True)
+        WRONG_SPELL_WAIT[admin_id] = {
+            "user_id": int(user_id),
+            "msg_id": int(msg_id),
+            "request_msg": query.message
+        }
+        await query.answer()
+        await client.send_message(
+            chnl_id,
+            "✏️ <b>Send correct spelling</b>",
+            reply_to_message_id=query.message.id
+        )
+
     elif query.data.startswith("rj_alert"):
         ident, user_id = query.data.split("#")
         userid = query.from_user.id
@@ -1178,6 +1200,61 @@ async def cb_handler(client: Client, query: CallbackQuery):
             await query.answer("ᴅᴜᴅᴇ ʏᴏᴜ ɴᴇᴇᴅ ᴛᴏ ᴘʀᴏᴠɪᴅᴇ ᴍᴏʀᴇ ɪɴғᴏ 😑 (ʟɪᴋᴇ : ʏᴇᴀʀ, ʟᴀɴɢᴜᴀɢᴇ, ʜᴏʟʟʏᴡᴏᴏᴅ ᴏʀ ʙᴏʟʟʏᴡᴏᴏᴅ)c", show_alert=True)
         else:
             await query.answer(script.ALRT_TXT, show_alert=True)
+
+    elif query.data.startswith("ulws_alert"):
+        ident, user_id = query.data.split("#")
+        if str(query.from_user.id) in user_id:
+            await query.answer("Correct spelling provided by admin ✏️", show_alert=True)
+        else:
+            await query.answer(script.ALRT_TXT, show_alert=True)
+
+
+@Client.on_message(filters.text & filters.chat(REQUEST_CHANNEL))
+async def handle_wrong_spelling_input(client, message):
+    admin_id = message.from_user.id
+    if admin_id not in WRONG_SPELL_WAIT:
+        return
+    data = WRONG_SPELL_WAIT.pop(admin_id)
+    correct_name = message.text.strip()
+    try:
+        await message.delete()
+    except:
+        pass
+    request_msg = data["request_msg"]
+    user_id = data["user_id"]
+    msg_id = data["msg_id"]
+    status_btn = [[
+        InlineKeyboardButton(
+            "✏️ ᴜᴘʟᴏᴀᴅᴇᴅ (ᴡʀᴏɴɢ sᴘᴇʟʟɪɴɢ)",
+            callback_data=f"ulws_alert#{user_id}"
+        )
+    ]]
+    await request_msg.edit_text(f"<s>{request_msg.text}</s>")
+    await request_msg.edit_reply_markup(InlineKeyboardMarkup(status_btn))
+    user_buttons = [
+        [InlineKeyboardButton("👥 Movie Group", url=MOVIE_GROUP_LINK)],
+        [InlineKeyboardButton("👀 View Request", url=request_msg.link)]
+    ]
+    try:
+        await client.send_message(
+            chat_id=user_id,
+            text=(
+                "<b>Your requested file is already uploaded.\n\n"
+                f"✅ Correct Spelling – <code>{correct_name}</code>\n\n"
+                "Please send correct spelling in group.</b>"
+            ),
+            reply_markup=InlineKeyboardMarkup(user_buttons)
+        )
+    except UserIsBlocked:
+        await client.send_message(
+            SUPPORT_GROUP,
+            text=(
+                "<b>Your requested file is already uploaded.\n\n"
+                f"✅ Correct Spelling – <code>{correct_name}</code></b>"
+            ),
+            reply_markup=InlineKeyboardMarkup(user_buttons),
+            reply_to_message_id=msg_id
+        )
             
 async def ai_spell_check(wrong_name):
     async def search_movie(wrong_name):
