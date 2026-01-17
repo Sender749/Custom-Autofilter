@@ -27,6 +27,7 @@ CAP = {}
 PAGE_CACHE = {}
 PAGE_CACHE_TTL = 300  # 5 minutes
 PAGE_PREFETCH = 3     # current + next 2 pages
+SUGGESTION_TRACKER = {}
 
 @Client.on_message(filters.private & filters.text & filters.incoming)
 async def pm_search(client, message):
@@ -512,6 +513,21 @@ async def spoll_checker(bot, query):
         )
         await asyncio.sleep(60)
         await k.delete()
+
+@Client.on_callback_query(filters.regex(r"^spelling#"))
+async def suggestion_click_handler(client, query: CallbackQuery):
+    title = query.data.split("#", 1)[1]
+    msg_id = query.message.id
+    if msg_id in SUGGESTION_TRACKER:
+        SUGGESTION_TRACKER[msg_id]["clicked"] = True
+    try:
+        await query.message.delete()
+    except:
+        pass
+    fake_msg = query.message
+    fake_msg.text = title
+    await auto_filter(client, fake_msg)
+    await query.answer("🔍 Searching...")
 
 @Client.on_callback_query(filters.regex(r"^req_admin"))
 async def request_to_admin(bot, query):
@@ -1222,13 +1238,14 @@ async def auto_filter(client, msg, spoll=False):
                     await ai_sts.delete()
                     return await auto_filter(client, msg)
                 await ai_sts.delete()
-                if message.reply_to_message and message.reply_to_message.id in SUGGESTION_TRACKER:
-                    await send_auto_request(client, message, search)
-                    await message.reply_text(
-                        "<b>📩 Request sent automatically to admin!\n"
-                        "⏳ Please wait, it will be added soon.</b>"
-                    )
-                    return
+                for data in SUGGESTION_TRACKER.values():
+                    if data["clicked"] and data["query"] == search:
+                        await send_auto_request(client, message, search)
+                        await message.reply_text(
+                            "<b>📩 Your request has been sent to admin.\n"
+                            "⏳ Please wait, it will be added soon.</b>"
+                        )
+                        return
                 await show_suggestions(client, msg, search)
             return
     else:
@@ -1377,35 +1394,44 @@ async def send_auto_request(bot, message, query):
     user = message.from_user
     text = (
         "<b>📮 AUTO REQUEST</b>\n\n"
-        f"👤 User: <a href='tg://user?id={user.id}'>"
-        f"{user.first_name}</a>\n"
+        f"👤 User: {user.mention}\n"
         f"🆔 ID: <code>{user.id}</code>\n"
         f"🎬 Title: <code>{query}</code>"
     )
-    try:
-        await bot.send_message(
-            chat_id=REQUEST_CHANNEL,
-            text=text
-        )
-    except Exception:
-        pass
+    sent = await bot.send_message(
+        chat_id=REQUEST_CHANNEL,
+        text=text
+    )
+    await message.reply_text(
+        "<b>✅ Request sent to admin!</b>",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✨ View Your Request ✨", url=sent.link)
+        ]])
+    )
 
 async def show_suggestions(bot, message, query):
     try:
         movies = await get_poster(query, bulk=True)
     except Exception:
-        movies = None
+        movies = []
     buttons = []
+    titles = []
     if movies:
-        for movie in movies[:MAX_SUGGESTIONS]:
+        for movie in movies:
             title = movie.get("title")
+            year = movie.get("year")
             if title:
-                buttons.append([
-                    InlineKeyboardButton(
-                        text=title,
-                        callback_data=f"spelling#{title}"
-                    )
-                ])
+                titles.append(f"{title} ({year})" if year else title)
+    seen = set()
+    clean_titles = []
+    for t in titles:
+        key = t.lower()
+        if key not in seen:
+            seen.add(key)
+            clean_titles.append(t)
+    for t in clean_titles[:MAX_SUGGESTIONS]:
+        buttons.append([InlineKeyboardButton(text=title, callback_data=f"spelling#{title}")
+        ])
     buttons.append([
         InlineKeyboardButton("🔍 ᴄʜᴇᴄᴋ sᴘᴇʟʟɪɴɢ ᴏɴ ɢᴏᴏɢʟᴇ 🔍", url=f"https://www.google.com/search?q={query.replace(' ', '+')}")
     ])
@@ -1418,19 +1444,17 @@ async def show_suggestions(bot, message, query):
         f"🌐 Or use Google to double-check the title spelling."
         f"<b>🔎 These are some related titles you might be looking for 👇</b>"
     )
-    await message.reply_text(
+    sent = await message.reply_text(
         text,
         reply_markup=InlineKeyboardMarkup(buttons),
         disable_web_page_preview=True
     )
-        SUGGESTION_TRACKER[sent.id] = {
+    SUGGESTION_TRACKER[sent.id] = {
         "clicked": False,
         "query": query,
         "user": message.from_user
     }
-    asyncio.create_task(
-        suggestion_timeout_handler(bot, sent)
-    )
+    asyncio.create_task(suggestion_timeout_handler(bot, sent))
 
 async def suggestion_timeout_handler(bot, msg):
     await asyncio.sleep(SUGGESTION_TIMEOUT)
