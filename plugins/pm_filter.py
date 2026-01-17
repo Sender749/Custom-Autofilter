@@ -17,6 +17,7 @@ lock = asyncio.Lock()
 import traceback
 from fuzzywuzzy import process
 import logging
+from utils import imdb_bulk_search
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)
@@ -1222,7 +1223,7 @@ async def auto_filter(client, msg, spoll=False):
                     await ai_sts.delete()
                     return await auto_filter(client, msg)
                 await ai_sts.delete()
-                return await silicon_spell_check(msg)
+                await show_suggestions(client, msg, search)
             return
     else:
         settings = await get_settings(msg.message.chat.id)
@@ -1365,6 +1366,31 @@ async def auto_filter(client, msg, spoll=False):
 
     if k and settings.get("auto_delete"):
         asyncio.create_task(handle_auto_delete(k))
+
+async def show_suggestions(bot, message, query):
+    suggestions = await imdb_bulk_search(query)
+    buttons = []
+    if suggestions:
+        for title in suggestions[:MAX_SUGGESTIONS]:
+            buttons.append([
+                InlineKeyboardButton(text=title, callback_data=f"spelling#{title}")
+            ])
+    buttons.append([InlineKeyboardButton("🔍 ᴄʜᴇᴄᴋ sᴘᴇʟʟɪɴɢ ᴏɴ ɢᴏᴏɢʟᴇ 🔍", url=f"https://www.google.com/search?q={query.replace(' ', '+')}")],
+                [InlineKeyboardButton("📮 ʀᴇǫᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ 📮", callback_data=f"request#{query}")])
+    text = (
+        f"<b>😕 I couldn't find any exact results for:</b>\n"
+        f"<code>{query}</code>\n\n"
+        f"<b>🔎 These are some related titles you might be looking for:</b>\n"
+        f"<i>Tap any option below to search it directly.</i>\n\n"
+        f"✅ If one of these matches your request, tap it.\n"
+        f"📩 If your spelling is correct, you can request it from admin.\n"
+        f"🌐 Or use Google to double-check the title spelling."
+    )
+    await message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(buttons),
+        disable_web_page_preview=True
+    )
 
 async def silicon_spell_check(message):
     mv_id = message.id
