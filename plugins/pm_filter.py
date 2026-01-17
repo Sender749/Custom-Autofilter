@@ -1222,6 +1222,13 @@ async def auto_filter(client, msg, spoll=False):
                     await ai_sts.delete()
                     return await auto_filter(client, msg)
                 await ai_sts.delete()
+                if message.reply_to_message and message.reply_to_message.id in SUGGESTION_TRACKER:
+                    await send_auto_request(client, message, search)
+                    await message.reply_text(
+                        "<b>📩 Request sent automatically to admin!\n"
+                        "⏳ Please wait, it will be added soon.</b>"
+                    )
+                    return
                 await show_suggestions(client, msg, search)
             return
     else:
@@ -1366,6 +1373,23 @@ async def auto_filter(client, msg, spoll=False):
     if k and settings.get("auto_delete"):
         asyncio.create_task(handle_auto_delete(k))
 
+async def send_auto_request(bot, message, query):
+    user = message.from_user
+    text = (
+        "<b>📮 AUTO REQUEST</b>\n\n"
+        f"👤 User: <a href='tg://user?id={user.id}'>"
+        f"{user.first_name}</a>\n"
+        f"🆔 ID: <code>{user.id}</code>\n"
+        f"🎬 Title: <code>{query}</code>"
+    )
+    try:
+        await bot.send_message(
+            chat_id=REQUEST_CHANNEL,
+            text=text
+        )
+    except Exception:
+        pass
+
 async def show_suggestions(bot, message, query):
     try:
         movies = await get_poster(query, bulk=True)
@@ -1388,19 +1412,57 @@ async def show_suggestions(bot, message, query):
     buttons.append([InlineKeyboardButton("📮 ʀᴇǫᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ 📮", callback_data=f"req_admin#{query}#{message.from_user.id}")
     ])
     text = (
-        f"<b>😕 I couldn't find any exact results for:</b>\n"
-        f"<code>{query}</code>\n\n"
-        f"<b>🔎 These are some related titles you might be looking for:</b>\n"
-        f"<i>Tap any option below to search it directly.</i>\n\n"
+        f"<b>😕 I couldn't find any exact results for: <code>{query}</code></b>\n"
         f"✅ If one of these matches your request, tap it.\n"
         f"📩 If your spelling is correct, you can request it from admin.\n"
         f"🌐 Or use Google to double-check the title spelling."
+        f"<b>🔎 These are some related titles you might be looking for 👇</b>"
     )
     await message.reply_text(
         text,
         reply_markup=InlineKeyboardMarkup(buttons),
         disable_web_page_preview=True
     )
+        SUGGESTION_TRACKER[sent.id] = {
+        "clicked": False,
+        "query": query,
+        "user": message.from_user
+    }
+    asyncio.create_task(
+        suggestion_timeout_handler(bot, sent)
+    )
+
+async def suggestion_timeout_handler(bot, msg):
+    await asyncio.sleep(SUGGESTION_TIMEOUT)
+    data = SUGGESTION_TRACKER.get(msg.id)
+    if not data:
+        return
+    if not data["clicked"]:
+        user = data["user"]
+        query = data["query"]
+
+        mention = (
+            f"<a href='tg://user?id={user.id}'>"
+            f"{user.first_name}</a>"
+        )
+        text = (
+            "<b>#FILE_NOT_FOUND</b>\n\n"
+            f"👤 User: {mention}\n"
+            f"🆔 ID: <code>{user.id}</code>\n"
+            f"🔍 Query: <code>{query}</code>"
+        )
+        try:
+            await bot.send_message(
+                chat_id=NOT_FOUND_FILE_CHANNEL,
+                text=text
+            )
+        except Exception:
+            pass
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+    SUGGESTION_TRACKER.pop(msg.id, None)
 
 async def silicon_spell_check(message):
     mv_id = message.id
