@@ -1229,14 +1229,14 @@ async def auto_filter(client, msg, spoll=False):
         silicondb.update_silicon_messages(message.from_user.id, message.text)
         await search_msg.delete()
         if not files:
-                if getattr(msg, "from_suggestion", False):
-                    await send_auto_request(client, message, search)
-                    await message.reply_text(
-                        "<b>📩 I still couldn’t find this.\n"
-                        "Your request has been sent to admin.</b>"
-                        "Admin will upload file shorty ✨.</b>"
-                    )
-                    return
+            if getattr(msg, "from_suggestion", False):
+                await send_auto_request(client, message, search)
+                await message.reply_text(
+                    "<b>📩 I still couldn’t find this.\n"
+                       "Your request has been sent to admin.</b>"
+                    "Admin will upload file shorty ✨.</b>"
+                )
+                return
             if settings["spell_check"]:
                 ai_sts = await msg.reply_text('<b>👾 ᴀɪ ɪs ᴄʜᴇᴄᴋɪɴɢ ꜰᴏʀ ʏᴏᴜʀ sᴘᴇʟʟɪɴɢ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</b>')
                 is_misspelled = await ai_spell_check(search)
