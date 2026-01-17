@@ -1307,7 +1307,7 @@ async def auto_filter(client, msg, spoll=False):
         await search_msg.delete()
         if not files:
             if getattr(msg, "from_suggestion", False):
-                await send_auto_request(client, message, search)
+                await trigger_auto_request(client, message, search)
                 return
             if settings["spell_check"]:
                 ai_sts = await msg.reply_text('<b>👾 ᴀɪ ɪs ᴄʜᴇᴄᴋɪɴɢ ꜰᴏʀ ʏᴏᴜʀ sᴘᴇʟʟɪɴɢ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</b>')
@@ -1471,23 +1471,16 @@ async def auto_filter(client, msg, spoll=False):
     if k and settings.get("auto_delete"):
         asyncio.create_task(handle_auto_delete(k))
 
-async def send_auto_request(bot, message, query):
-    user = message.from_user
-    admin_buttons = [[InlineKeyboardButton("👀 View Request", url=message.link)],
-        [InlineKeyboardButton("⚙ Show Options", callback_data=f"show_options#{user.id}#{message.id}")]
-    ]
-    sent_request = await bot.send_message(
-        chat_id=REQUEST_CHANNEL,
-        text=script.REQUEST_TXT.format(
-            user.mention,
-            user.id,
-            query
-        ),
-        reply_markup=InlineKeyboardMarkup(admin_buttons)
-    )
-    user_buttons = [[InlineKeyboardButton("✨ ᴠɪᴇᴡ ʏᴏᴜʀ ʀᴇǫᴜᴇsᴛ ✨", url=sent_request.link)
-    ]]
-    await message.reply_text("<b>📩 I still couldn’t find this.\n Your request has been sent to admin.🥷\n Admin will upload file shorty ✨.</b>",reply_markup=InlineKeyboardMarkup(user_buttons))
+async def trigger_auto_request(client, message, search):
+    fake_data = f"req_admin#{search}#{message.from_user.id}"
+    class FakeQuery:
+        data = fake_data
+        from_user = message.from_user
+        message = message
+        async def answer(self, *args, **kwargs):
+            return
+    fake_query = FakeQuery()
+    await request_to_admin(client, fake_query)
 
 async def show_suggestions(bot, message, query):
     try:
