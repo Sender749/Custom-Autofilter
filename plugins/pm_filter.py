@@ -519,11 +519,10 @@ async def spoll_checker(bot, query):
 async def suggestion_click_handler(client, query: CallbackQuery):
     title = query.data.split("#", 1)[1]
     SUGGESTION_TRACKER.get(query.message.id, {})["clicked"] = True
-    if query.message.chat.type == "private":
-        try:
-            await query.message.delete()
-        except:
-            pass
+    try:
+        await query.message.delete()
+    except:
+        pass
     msg = query.message
     msg.text = title
     msg.from_suggestion = True
@@ -541,21 +540,7 @@ async def trigger_auto_request(bot, message, search):
         search=search,
         origin_message=message
     )
-    try:
-        if message.chat.type in ("group", "supergroup"):
-            await message.reply_text(
-                "📮 <b>Your request was sent to admin.</b>\n\n"
-                "⏳ Please wait for admin response.",
-                reply_to_message_id=message.id
-            )
-        else:
-            await bot.send_message(
-                chat_id=message.from_user.id,
-                text="📮 <b>Your request was sent to admin.</b>\n\n"
-                     "⏳ Please wait for admin response."
-            )
-    except:
-        pass
+
     
 def get_safe_message_link(message):
     try:
