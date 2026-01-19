@@ -527,13 +527,17 @@ async def suggestion_click_handler(client, query: CallbackQuery):
     msg = query.message
     msg.text = title
     msg.from_suggestion = True
+    msg._real_user = query.from_user
     await query.answer("🔍 Searching...")
     await auto_filter(client, msg)
 
 async def trigger_auto_request(bot, message, search):
+    user = getattr(message, "_real_user", message.from_user)
+    if not user or user.is_bot:
+        return
     await send_request_common(
         bot,
-        user=message.from_user,
+        user=user,
         search=search,
         origin_message=message
     )
@@ -598,11 +602,13 @@ async def send_request_common(
     user_btn = [[
         InlineKeyboardButton("✨ View Your Request ✨", url=sent.link)
     ]]
-    await bot.send_message(
-        chat_id=user.id,
-        text="<b>✅ Your request has been sent to admin!</b>",
-        reply_markup=InlineKeyboardMarkup(user_btn)
-    )
+    if user and not user.is_bot:
+        await bot.send_message(
+            chat_id=user.id,
+            text="<b>✅ Your request has been sent to admin!</b>",
+            reply_markup=InlineKeyboardMarkup(user_btn)
+        )
+
 
 @Client.on_callback_query(filters.regex(r"^req_admin"))
 async def request_to_admin(bot, query):
@@ -1350,6 +1356,9 @@ async def ai_spell_check(wrong_name):
 async def auto_filter(client, msg, spoll=False):
     if not spoll:
         message = msg
+        real_user = getattr(msg, "_real_user", None)
+        if real_user:
+            message.from_user = real_user
         search = message.text
         chat_id = message.chat.id
         search_msg = await msg.reply_text(f'<b>🕵️ sᴇᴀʀᴄʜɪɴɢ {search}"</b>')
