@@ -1198,6 +1198,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             chnl_id,
             "✏️ <b>Send correct spelling</b>",
             reply_to_message_id=query.message.id
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_wrong#{query.message.id}")]])
         )
         WRONG_SPELL_WAIT[prompt.id] = {
             "user_id": int(user_id),
@@ -1271,6 +1272,55 @@ async def cb_handler(client: Client, query: CallbackQuery):
         else:
             await query.answer(script.ALRT_TXT, show_alert=True)
 
+@Client.on_callback_query(filters.regex(r"^cancel_wrong#"))
+async def cancel_wrong_spelling(client, query: CallbackQuery):
+    _, req_msg_id = query.data.split("#")
+    req_msg_id = int(req_msg_id)
+
+    # find waiting entry
+    prompt_id = None
+    for pid, data in WRONG_SPELL_WAIT.items():
+        if data["request_msg"].id == req_msg_id:
+            prompt_id = pid
+            break
+
+    if not prompt_id:
+        return await query.answer("Nothing to cancel", show_alert=True)
+
+    data = WRONG_SPELL_WAIT.pop(prompt_id)
+
+    # delete prompt
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+    # restore Show Options buttons
+    user_id = data["user_id"]
+    msg_id = data["msg_id"]
+    req_msg = data["request_msg"]
+
+    buttons = [[
+        InlineKeyboardButton("ᴀʟʀᴇᴀᴅʏ ᴀᴠᴀɪʟᴀʙʟᴇ", callback_data=f"already_available#{user_id}#{msg_id}"),
+        InlineKeyboardButton("ɴᴏᴛ ʀᴇʟᴇᴀsᴇᴅ ʏᴇᴛ", callback_data=f"not_released#{user_id}#{msg_id}")
+    ],[
+        InlineKeyboardButton("ᴛᴇʟʟ ᴍᴇ ʏᴇᴀʀ/ʟᴀɴɢᴜᴀɢᴇ", callback_data=f"year#{user_id}#{msg_id}"),
+        InlineKeyboardButton("ᴄʜᴇᴄᴋ ʏᴏᴜʀ sᴘᴇʟʟɪɴɢ", callback_data=f"upload_in#{user_id}#{msg_id}")
+    ],[
+        InlineKeyboardButton("ᴜᴘʟᴏᴀᴅᴇᴅ", callback_data=f"uploaded#{user_id}#{msg_id}"),
+        InlineKeyboardButton("ɴᴏᴛ ᴀᴠᴀɪʟᴀʙʟᴇ", callback_data=f"not_available#{user_id}#{msg_id}")
+    ],[
+        InlineKeyboardButton("ᴜᴘʟᴏᴀᴅᴇᴅ, ᴡʀᴏɴɢ sᴘᴇʟʟɪɴɢ", callback_data=f"spl_wrong#{user_id}#{msg_id}")
+    ]]
+
+    try:
+        await req_msg.edit_reply_markup(InlineKeyboardMarkup(buttons))
+    except:
+        pass
+
+    await query.answer("Cancelled ✖️")
+
+
 @Client.on_message(filters.text & filters.reply & filters.chat(REQUEST_CHANNEL))
 async def handle_wrong_spelling_input(client, message):
     reply = message.reply_to_message
@@ -1317,7 +1367,7 @@ async def handle_wrong_spelling_input(client, message):
                 "<b>Your requested file is already uploaded.\n\n"
                 f"✅ Correct Spelling – <code>{correct_name}</code></b>"
             ),
-            reply_markup=InlineKeyboardMarkup(user_buttons)
+            reply_markup=InlineKeyboardMarkup(user_buttons),
             reply_to_message_id=msg_id
         )
             
