@@ -1307,7 +1307,7 @@ async def auto_filter(client, msg, spoll=False):
         await search_msg.delete()
         if not files:
             if getattr(msg, "from_suggestion", False):
-                await auto_request_via_request_cmd(client, search, message)
+                await auto_request_via_request_cmd(client, message, search)
                 return
             if settings["spell_check"]:
                 ai_sts = await msg.reply_text('<b>👾 ᴀɪ ɪs ᴄʜᴇᴄᴋɪɴɢ ꜰᴏʀ ʏᴏᴜʀ sᴘᴇʟʟɪɴɢ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</b>')
