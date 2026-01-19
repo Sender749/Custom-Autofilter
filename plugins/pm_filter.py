@@ -518,30 +518,26 @@ async def spoll_checker(bot, query):
 @Client.on_callback_query(filters.regex(r"^spelling#"))
 async def suggestion_click_handler(client, query: CallbackQuery):
     title = query.data.split("#", 1)[1]
-    msg_id = query.message.id
-    if msg_id in SUGGESTION_TRACKER:
-        SUGGESTION_TRACKER[msg_id]["clicked"] = True
+    SUGGESTION_TRACKER.get(query.message.id, {})["clicked"] = True
     try:
         await query.message.delete()
     except:
         pass
-    fake_msg = query.message
-    fake_msg.text = title
-    fake_msg.from_suggestion = True
-    await auto_filter(client, fake_msg)
+    msg = query.message
+    msg.text = title
+    msg.from_suggestion = True
     await query.answer("🔍 Searching...")
-    
-async def auto_trigger_req_admin(bot, message, search):
-    class FakeQuery:
-        def __init__(self, bot, message, search):
+    await auto_filter(client, msg)
+
+async def trigger_auto_request(bot, message, search):
+    class _Q:
+        def __init__(self):
             self.data = f"req_admin#{search}#{message.from_user.id}"
             self.from_user = message.from_user
             self.message = message
-            self._bot = bot
-        async def answer(self, *args, **kwargs):
+        async def answer(self, *a, **k):
             return
-    fake_query = FakeQuery(bot, message, search)
-    await request_to_admin(bot, fake_query)
+    await request_to_admin(bot, _Q())
 
 @Client.on_callback_query(filters.regex(r"^req_admin"))
 async def request_to_admin(bot, query):
@@ -1287,31 +1283,6 @@ async def ai_spell_check(wrong_name):
         movie_list.remove(movie)
     return
 
-async def auto_request_simple(bot, message, query):
-    user = message.from_user
-    admin_text = (
-        "<b>📮 AUTO REQUEST</b>\n\n"
-        f"👤 User: {user.mention}\n"
-        f"🆔 ID: <code>{user.id}</code>\n"
-        f"🎬 Query: <code>{query}</code>"
-    )
-    try:
-        await bot.send_message(REQUEST_CHANNEL, admin_text)
-    except Exception as e:
-        print("Auto-request admin send failed:", e)
-    confirm_text = (
-        "<b>❌ File not found</b>\n\n"
-        "📩 Your request has been sent to admin.\n"
-        "⏳ Please wait, it will be uploaded soon."
-    )
-    try:
-        await message.reply_text(confirm_text)
-    except Exception:
-        try:
-            await bot.send_message(user.id, confirm_text)
-        except:
-            pass
-
 async def auto_filter(client, msg, spoll=False):
     if not spoll:
         message = msg
@@ -1344,7 +1315,7 @@ async def auto_filter(client, msg, spoll=False):
         await search_msg.delete()
         if not files:
             if getattr(msg, "from_suggestion", False):
-                await auto_request_simple(client, message, search)
+                await trigger_auto_request(client, message, search)
                 return
             if settings["spell_check"]:
                 ai_sts = await msg.reply_text('<b>👾 ᴀɪ ɪs ᴄʜᴇᴄᴋɪɴɢ ꜰᴏʀ ʏᴏᴜʀ sᴘᴇʟʟɪɴɢ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</b>')
@@ -1356,14 +1327,6 @@ async def auto_filter(client, msg, spoll=False):
                     await ai_sts.delete()
                     return await auto_filter(client, msg)
                 await ai_sts.delete()
-              #  for data in SUGGESTION_TRACKER.values():
-              #      if data["clicked"] and data["query"] == search:
-               #         await send_auto_request(client, message, search)
-               #         await message.reply_text(
-               #             "<b>📩 Your request has been sent to admin.\n"
-               #             "⏳ Please wait, it will be added soon.</b>"
-               #         )
-               #         return
                 await show_suggestions(client, msg, search)
             return
     else:
@@ -1507,11 +1470,6 @@ async def auto_filter(client, msg, spoll=False):
 
     if k and settings.get("auto_delete"):
         asyncio.create_task(handle_auto_delete(k))
-
-async def auto_request_via_request_cmd(bot, message, query_text):
-    fake_text = f"/request {query_text}"
-    message.text = fake_text
-    await send_request(bot, message)
 
 async def show_suggestions(bot, message, query):
     try:
