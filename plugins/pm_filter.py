@@ -534,7 +534,7 @@ async def trigger_auto_request(bot, message, search):
         def __init__(self):
             self.data = f"req_admin#{search}#{message.from_user.id}"
             self.from_user = message.from_user
-            self.message = message
+            self.message = None  
         async def answer(self, *a, **k):
             return
     await request_to_admin(bot, _Q())
@@ -557,7 +557,8 @@ async def request_to_admin(bot, query):
     btn = [[
         InlineKeyboardButton('✨ ᴠɪᴇᴡ ʏᴏᴜʀ ʀᴇᴏ̨ᴜᴇsᴛ ✨', url=f"{sent_request.link}")
     ]]
-    await query.message.edit_text(
+    await bot.send_message(
+        chat_id=query.from_user.id,
         text="<b>✅ Your request has been sent to admin!</b>",
         reply_markup=InlineKeyboardMarkup(btn)
     )
