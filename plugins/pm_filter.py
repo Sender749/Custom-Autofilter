@@ -979,7 +979,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             InlineKeyboardButton("ᴜᴘʟᴏᴀᴅᴇᴅ", callback_data=f"uploaded#{user_id}#{msg_id}"),
             InlineKeyboardButton("ɴᴏᴛ ᴀᴠᴀɪʟᴀʙʟᴇ", callback_data=f"not_available#{user_id}#{msg_id}")
         ],[
-            InlineKeyboardButton("ᴜᴘʟᴏᴀᴅᴇᴅ, ᴡʀᴏɴɢ sᴘᴇʟʟɪɴɢ", callback_data=f"uploaded_wrong"#{user_id}#{msg_id}")
+            InlineKeyboardButton("ᴜᴘʟᴏᴀᴅᴇᴅ, ᴡʀᴏɴɢ sᴘᴇʟʟɪɴɢ", callback_data=f"uploaded_wrong#{user_id}#{msg_id}")
         ]]
         try:
             st = await client.get_chat_member(chnl_id, userid)
@@ -1500,10 +1500,10 @@ async def show_suggestions(bot, message, query):
     buttons.append([InlineKeyboardButton("📮 ʀᴇǫᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ 📮", callback_data=f"req_admin#{query}#{message.from_user.id}")
     ])
     text = (
-        f"<b>😕 I couldn't find any exact results for: <code>{query}</code></b>\n"
+        f"<b>😕 I couldn't find any exact results for: <code>{query}</code></b>\n\n"
         f"✅ If one of these matches your request, tap it.\n"
         f"📩 If your spelling is correct, you can request it from admin.\n"
-        f"🌐 Or use Google to double-check the title spelling."
+        f"🌐 Or use Google to double-check the title spelling.\n"
         f"<b>🔎 These are some related titles you might be looking for 👇</b>"
     )
     sent = await message.reply_text(
