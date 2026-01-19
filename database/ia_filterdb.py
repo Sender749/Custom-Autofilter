@@ -86,11 +86,13 @@ async def save_file(media):
             return 'err'
 
 def clean_query(query, filter_words):
-    if not query or not filter_words:
+    if not query:
         return query
-    pattern = r'\b(?:' + '|'.join(map(re.escape, filter_words)) + r')\b'
-    cleaned = re.sub(pattern, '', query, flags=re.IGNORECASE)
-    return ' '.join(cleaned.split()).strip()
+    query = re.sub(r"[^\w\s]", " ", query)
+    if filter_words:
+        pattern = r'\b(?:' + '|'.join(map(re.escape, filter_words)) + r')\b'
+        query = re.sub(pattern, '', query, flags=re.IGNORECASE)
+    return ' '.join(query.split()).strip()
 
 async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
     query = str(query).strip()
@@ -102,7 +104,6 @@ async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
         raw_pattern = r'(\b|[\.\+\-_])' + query + r'(\b|[\.\+\-_])'
     else:
         raw_pattern = query.replace(' ', r'.*[\s\.\+\-_]')
-    
     try:
         regex = re.compile(raw_pattern, flags=re.IGNORECASE)
     except:
@@ -113,12 +114,13 @@ async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
     else:
         filter = {'file_name': regex}
 
-    cursor = collection.find(filter)
-    results = [doc for doc in cursor]
-
+    result_map = {}
+    for doc in collection.find(mongo_filter):
+        result_map[doc['_id']] = doc
     if SECOND_FILES_DATABASE_URL:
-        cursor2 = second_collection.find(filter)
-        results.extend([doc for doc in cursor2])
+        for doc in second_collection.find(mongo_filter):
+            result_map.setdefault(doc['_id'], doc)
+    results = list(result_map.values())
 
     if lang:
         lang_files = [file for file in results if lang in file['file_name'].lower()]
