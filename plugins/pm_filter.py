@@ -1270,25 +1270,25 @@ async def cb_handler(client: Client, query: CallbackQuery):
         else:
             await query.answer(script.ALRT_TXT, show_alert=True)
 
-@Client.on_message(filters.chat(REQUEST_CHANNEL) & filters.text)
+@Client.on_message(filters.text & filters.chat(REQUEST_CHANNEL))
 async def handle_wrong_spelling_input(client, message):
-    if message.from_user:
-        admin_id = message.from_user.id
-    elif message.sender_chat:
-        admin_id = message.sender_chat.id
-    else:
+    admin_id = message.from_user.id if message.from_user else None
+    if not admin_id:
         return
     if admin_id not in WRONG_SPELL_WAIT:
         return
     data = WRONG_SPELL_WAIT.pop(admin_id)
     correct_name = message.text.strip()
+    request_msg = data["request_msg"]
+    user_id = data["user_id"]
     try:
         await message.delete()
     except:
         pass
-    request_msg = data["request_msg"]
-    user_id = data["user_id"]
-    msg_id = data["msg_id"]
+    try:
+        await request_msg.reply_to_message.delete()
+    except:
+        pass
     old_text = request_msg.text or request_msg.caption or "Request"
     status_btn = [[InlineKeyboardButton("✏️ ᴜᴘʟᴏᴀᴅᴇᴅ (ᴡʀᴏɴɢ sᴘᴇʟʟɪɴɢ)", callback_data=f"ulws_alert#{user_id}")
     ]]
@@ -1315,8 +1315,7 @@ async def handle_wrong_spelling_input(client, message):
                 "<b>Your requested file is already uploaded.\n\n"
                 f"✅ Correct Spelling – <code>{correct_name}</code></b>"
             ),
-            reply_markup=InlineKeyboardMarkup(user_buttons),
-            reply_to_message_id=msg_id
+            reply_markup=InlineKeyboardMarkup(user_buttons)
         )
             
 async def ai_spell_check(wrong_name):
