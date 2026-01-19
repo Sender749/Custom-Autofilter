@@ -21,73 +21,73 @@ def is_valid_ip(ip):
 API_ID = int(environ.get('API_ID', '25208597'))
 API_HASH = environ.get('API_HASH', 'e99c3c5693d6d23a143b6ce760b7a6de')
 BOT_TOKEN = environ.get('BOT_TOKEN', '')
-ADMINS = [int(admin) if id_pattern.search(admin) else admin for admin in environ.get('ADMINS', '6541030917').split()]
+ADMINS = [int(admin) if id_pattern.search(admin) else admin for admin in environ.get('ADMINS', '6541030917 1052054451').split()]
 USERNAME = environ.get('USERNAME', "https://telegram.me/Navex_69")
-LOG_CHANNEL = int(environ.get('LOG_CHANNEL', '-1003137381162'))
+LOG_CHANNEL = int(environ.get('LOG_CHANNEL', '-1002262450769'))
 MOVIE_GROUP_LINK = environ.get('MOVIE_GROUP_LINK', 'https://t.me/Navex_Movies')
 
 # Pics 
 
-QR_CODE = environ.get('QR_CODE', 'https://envs.sh/iKI.jpg')
+QR_CODE = environ.get('QR_CODE', 's://envs.sh/iKu.jpg https://envs.sh/iKE.jpg https://envs.sh/iKe.jpg https://envs.sh/iKi.jpg https://envs.sh/iKb.jpg')
 START_IMG = environ.get('START_IMG', 'https://i.ibb.co/LdT5fdJY/photo-2025-08-13-01-12-38-7537871916074270724.jpg')
 FSUB_PICS = (environ.get('FSUB_PICS', 'https://graph.org/file/7478ff3eac37f4329c3d8.jpg https://graph.org/file/56b5deb73f3b132e2bb73.jpg')).split() 
 
 # File Limit
 
 IS_FILE_LIMIT = is_enabled('IS_FILE_LIMIT', True) # Enable Or Disable File Limit
-FILES_LIMIT = int(environ.get("FREE_FILES", "3")) #No. of File User Gets In Free
+FILES_LIMIT = int(environ.get("FREE_FILES", "2")) #No. of File User Gets In Free
 
 # Database Settings
 
-DATABASE_URI = environ.get('DATABASE_URI', "mongodb+srv://Trail:fortrail@cluster0.ngie1tz.mongodb.net/?appName=Cluster0")
-FILES_DATABASE_URL = environ.get('FILES_DATABASE_URL', "mongodb+srv://Trail:fortrail@cluster0.ngie1tz.mongodb.net/?appName=Cluster0") # For Files
-SECOND_FILES_DATABASE_URL = environ.get('SECOND_FILES_DATABASE_URL', "mongodb+srv://Trail:fortrail@cluster0.ngie1tz.mongodb.net/?appName=Cluster0") # 2nd DB For Files
+DATABASE_URI = environ.get('DATABASE_URI', "mongodb+srv://autofilter:filter@cluster0.n6j7ckr.mongodb.net/?appName=Cluster0")
+FILES_DATABASE_URL = environ.get('FILES_DATABASE_URL', "mongodb+srv://autofilter2:filter2@cluster0.febqn5i.mongodb.net/?appName=Cluster0") # For Files
+SECOND_FILES_DATABASE_URL = environ.get('SECOND_FILES_DATABASE_URL', "mongodb+srv://autofilter3:filter3@cluster0.9kwp5tc.mongodb.net/?appName=Cluster0") # 2nd DB For Files
 DATABASE_NAME = environ.get('DATABASE_NAME', "Cluster0")
 COLLECTION_NAME = environ.get('COLLECTION_NAME', 'navex')
 
 # Verify/Shortlink Settings 
 
 IS_VERIFY = is_enabled('IS_VERIFY', True)
-LOG_VR_CHANNEL = int(environ.get('LOG_VR_CHANNEL', '-1003137381162'))
-LOG_API_CHANNEL = int(environ.get('LOG_API_CHANNEL', '-1003137381162'))
+LOG_VR_CHANNEL = int(environ.get('LOG_VR_CHANNEL', '-1002279624678'))
+LOG_API_CHANNEL = int(environ.get('LOG_API_CHANNEL', '-1002279624678'))
 TUTORIAL = environ.get("TUTORIAL", "https://t.me/Navexdisscussion/33")
 TUTORIAL2 = environ.get("TUTORIAL2", "https://t.me/Navexdisscussion/33")
 TUTORIAL3 = environ.get("TUTORIAL3", "https://t.me/Navexdisscussion/33")
 VERIFY_IMG = environ.get("VERIFY_IMG", "https://graph.org/file/1669ab9af68eaa62c3ca4.jpg")
 SHORTENER_API = environ.get("SHORTENER_API", "fb4812435a09dcca63276a47da3c8ac5c23239ef")
 SHORTENER_WEBSITE = environ.get("SHORTENER_WEBSITE", 'instantlinks.co')
-SHORTENER_API2 = environ.get("SHORTENER_API2", "fb4812435a09dcca63276a47da3c8ac5c23239ef")
+SHORTENER_API2 = environ.get("SHORTENER_API2", "7ef9ed640db12a292b7c33f43922ded1feef2ddb")
 SHORTENER_WEBSITE2 = environ.get("SHORTENER_WEBSITE2", 'instantlinks.co')
-SHORTENER_API3 = environ.get("SHORTENER_API3", "fb4812435a09dcca63276a47da3c8ac5c23239ef")
+SHORTENER_API3 = environ.get("SHORTENER_API3", "bbe02c66b042f605c13ca910a0981014cf02e381")
 SHORTENER_WEBSITE3 = environ.get("SHORTENER_WEBSITE3", 'instantlinks.co')
-TWO_VERIFY_GAP = int(environ.get('TWO_VERIFY_GAP', "14400")) #in seconds
-THREE_VERIFY_GAP = int(environ.get('THREE_VERIFY_GAP', "14400")) #in seconds
+TWO_VERIFY_GAP = int(environ.get('TWO_VERIFY_GAP', "28800")) #in seconds
+THREE_VERIFY_GAP = int(environ.get('THREE_VERIFY_GAP', "28800")) #in seconds
 
 # Force Subscribe Settings 
 
-auth_req_channels = environ.get("AUTH_REQ_CHANNELS", "-1003136895050")# requst to join Channel for force sub (make sure bot is admin) only for bot ADMINS  
-auth_channels = environ.get("AUTH_CHANNELS", "-1003136895050")# Channels for force sub (make sure bot is admin)
+auth_req_channels = environ.get("AUTH_REQ_CHANNELS", "-100")# requst to join Channel for force sub (make sure bot is admin) only for bot ADMINS  
+auth_channels = environ.get("AUTH_CHANNELS", "-1002333962739")# Channels for force sub (make sure bot is admin)
 AUTH_REQ_CHANNELS = [int(ch) for ch in auth_req_channels.split() if ch and id_pattern.match(ch)] 
 AUTH_CHANNELS = [int(ch) for ch in auth_channels.split() if ch and id_pattern.match(ch)]
 
 # Channels
 
-SUPPORT_GROUP = int(environ.get('SUPPORT_GROUP', '-1003136895050'))
-request_channel = environ.get('REQUEST_CHANNEL', '-1003136895050')
+SUPPORT_GROUP = int(environ.get('SUPPORT_GROUP', '-1002262450769'))
+request_channel = environ.get('REQUEST_CHANNEL', '-1002380553501')
 REQUEST_CHANNEL = int(request_channel) if request_channel and id_pattern.search(request_channel) else None
 
 # Movie Update Notification Settings/ Auto Index Settings
 
 # Not Found Handling
-NOT_FOUND_FILE_CHANNEL = int(environ.get("NOT_FOUND_FILE_CHANNEL", "-1003136895050"))
-SUGGESTION_TIMEOUT = int(environ.get("SUGGESTION_TIMEOUT", "20"))  # seconds
+NOT_FOUND_FILE_CHANNEL = int(environ.get("NOT_FOUND_FILE_CHANNEL", "-1002279624678"))
+SUGGESTION_TIMEOUT = int(environ.get("SUGGESTION_TIMEOUT", "120"))  # seconds
 MAX_SUGGESTIONS = int(environ.get("MAX_SUGGESTIONS", "8"))
 MOVIE_UPDATE_NOTIFICATION = bool(environ.get('MOVIE_UPDATE_NOTIFICATION', False))  # Notification On (True) / Off (False)
-MOVIE_UPDATE_CHANNEL = int(environ.get('MOVIE_UPDATE_CHANNEL', '-1003136895050'))  # Notification of sent to your channel
-fetch_update_channels = environ.get("FETCH_MOVIE_UPDATE","-1003136895050 -1002028282135") # Movie Update Fetch Channels (use space for multiple channels)
+MOVIE_UPDATE_CHANNEL = int(environ.get('MOVIE_UPDATE_CHANNEL', '-1002333962739'))  # Notification of sent to your channel
+fetch_update_channels = environ.get("FETCH_MOVIE_UPDATE","-1002028282135 -1002856477031") # Movie Update Fetch Channels (use space for multiple channels)
 FETCH_MOVIE_UPDATE = [int(ch) for ch in fetch_update_channels.split()if ch and id_pattern.match(ch)]
-CHANNELS = [int(ch) if id_pattern.search(ch) else ch for ch in environ.get('CHANNELS', '-1002445793312').split()] # Auto Index Channel
-DELETE_CHANNELS = int(environ.get('DELETE_CHANNELS','-1003136895050')) # Channel to delete file from DB
+CHANNELS = [int(ch) if id_pattern.search(ch) else ch for ch in environ.get('CHANNELS', '-1002066489726 -1002445793312 -1002407564854 -1002467109334').split()] # Auto Index Channel
+DELETE_CHANNELS = int(environ.get('DELETE_CHANNELS','-1002661660620')) # Channel to delete file from DB
 IMAGE_FETCH = bool(environ.get('IMAGE_FETCH', True))  # On (True) / Off (False)
 LINK_PREVIEW = bool(environ.get('LINK_PREVIEW', False)) # Shows link preview in notification msg instead of image
 ABOVE_PREVIEW = bool(environ.get('ABOVE_PREVIEW', True)) # Shows link preview above the text in notification msg if True else below the msg
@@ -110,7 +110,7 @@ LONG_IMDB_DESCRIPTION = is_enabled('LONG_IMDB_DESCRIPTION', False)
 PROTECT_CONTENT = is_enabled('PROTECT_CONTENT', False)
 SPELL_CHECK = is_enabled('SPELL_CHECK', True)
 LINK_MODE = is_enabled('LINK_MODE', True)
-USE_CAPTION_FILTER = is_enabled('USE_CAPTION_FILTER', False)
+USE_CAPTION_FILTER = is_enabled('USE_CAPTION_FILTER', True)
 
 # Filters Settings No Need To Change Anything There 
 
@@ -120,8 +120,8 @@ SEASONS = [("sᴇᴀsᴏɴ 𝟷", "s01"), ("sᴇᴀsᴏɴ 𝟸", "s02"), ("sᴇ�
 
 # Stream Settings 
 
-IS_PREMIUM_STREAM = is_enabled('IS_PREMIUM_STREAM', False) # True To Allow Stream For Premium User Only
-BIN_CHANNEL = environ.get("BIN_CHANNEL", "-1003136895050") # Channel Where Files sent For stream
+IS_PREMIUM_STREAM = is_enabled('IS_PREMIUM_STREAM', True) # True To Allow Stream For Premium User Only
+BIN_CHANNEL = environ.get("BIN_CHANNEL", "-1002262450769") # Channel Where Files sent For stream
 if len(BIN_CHANNEL) == 0:
     print('Error BIN_CHANNEL is missing, exiting now')
     exit()
