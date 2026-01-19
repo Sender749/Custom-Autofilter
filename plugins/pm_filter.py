@@ -983,7 +983,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             InlineKeyboardButton("ᴜᴘʟᴏᴀᴅᴇᴅ", callback_data=f"uploaded#{user_id}#{msg_id}"),
             InlineKeyboardButton("ɴᴏᴛ ᴀᴠᴀɪʟᴀʙʟᴇ", callback_data=f"not_available#{user_id}#{msg_id}")
         ],[
-            InlineKeyboardButton("ᴜᴘʟᴏᴀᴅᴇᴅ, ᴡʀᴏɴɢ sᴘᴇʟʟɪɴɢ", callback_data=f"uploaded_wrong#{user_id}#{msg_id}")
+            InlineKeyboardButton("ᴜᴘʟᴏᴀᴅᴇᴅ, ᴡʀᴏɴɢ sᴘᴇʟʟɪɴɢ", callback_data=f"#{user_id}#{msg_id}")
         ]]
         try:
             st = await client.get_chat_member(chnl_id, userid)
@@ -1220,6 +1220,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
         else:
             await query.answer(script.ALRT_TXT, show_alert=True)
 
+@Client.on_message(filters.chat(REQUEST_CHANNEL) & filters.text)
 async def handle_wrong_spelling_input(client, message):
     admin_id = message.from_user.id
     if admin_id not in WRONG_SPELL_WAIT:
@@ -1285,6 +1286,31 @@ async def ai_spell_check(wrong_name):
         movie_list.remove(movie)
     return
 
+async def auto_request_simple(bot, message, query):
+    user = message.from_user
+    admin_text = (
+        "<b>📮 AUTO REQUEST</b>\n\n"
+        f"👤 User: {user.mention}\n"
+        f"🆔 ID: <code>{user.id}</code>\n"
+        f"🎬 Query: <code>{query}</code>"
+    )
+    try:
+        await bot.send_message(REQUEST_CHANNEL, admin_text)
+    except Exception as e:
+        print("Auto-request admin send failed:", e)
+    confirm_text = (
+        "<b>❌ File not found</b>\n\n"
+        "📩 Your request has been sent to admin.\n"
+        "⏳ Please wait, it will be uploaded soon."
+    )
+    try:
+        await message.reply_text(confirm_text)
+    except Exception:
+        try:
+            await bot.send_message(user.id, confirm_text)
+        except:
+            pass
+
 async def auto_filter(client, msg, spoll=False):
     if not spoll:
         message = msg
@@ -1317,7 +1343,7 @@ async def auto_filter(client, msg, spoll=False):
         await search_msg.delete()
         if not files:
             if getattr(msg, "from_suggestion", False):
-                await auto_trigger_req_admin(client, message, search)
+                await auto_request_simple(client, message, search)
                 return
             if settings["spell_check"]:
                 ai_sts = await msg.reply_text('<b>👾 ᴀɪ ɪs ᴄʜᴇᴄᴋɪɴɢ ꜰᴏʀ ʏᴏᴜʀ sᴘᴇʟʟɪɴɢ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</b>')
