@@ -19,22 +19,35 @@ class script(object):
 • /start - ᴜꜱᴇ ʙᴏᴛ ꜰᴇᴀᴛᴜʀᴇꜱ
 • /stats - ᴛᴏᴛᴀʟ ᴜꜱᴇʀꜱ & ᴄʜᴀᴛꜱ
 • /del_msg - ʀᴇᴍᴏᴠᴇ ꜰɪʟᴇ ɴᴀᴍᴇ ɴᴏᴛɪꜰɪᴄᴀᴛɪᴏɴ
-• /delete - ᴅᴇʟᴇᴛᴇ ꜱᴘᴇᴄɪꜰɪᴄ ꜰɪʟᴇ
+• /delete `<query>` - Delete indexed files from the database that match the given query.
 • /deleteall - ᴅᴇʟᴇᴛᴇ ᴀʟʟ ꜰɪʟᴇꜱ
+• /index - manual index
+• /channel - Show the list of all indexed channels.
+• /settings - channel settings
+• /details - see group details
 
 <b>⚙️ ꜱᴇᴛᴛɪɴɢꜱ</b>
 • /movie_update - ᴏɴ/ᴏꜰꜰ ᴜᴘᴅᴀᴛᴇꜱ
 • /pm_search - ᴏɴ/ᴏꜰꜰ ᴘᴍ ꜱᴇᴀʀᴄʜ
 • /auto_filter - ᴏɴ/ᴏꜰꜰ ᴀᴜᴛᴏ ꜰɪʟᴛᴇʀ
+• /stats - check bot stats
+• /movie_update - Movie update on/off
+• /maintenance_mode - Maintenance mode on/off
 
 <b>👥 ᴜꜱᴇʀꜱ & ɢʀᴏᴜᴘꜱ</b>
 • /users - ᴜꜱᴇʀ ʟɪꜱᴛ & ɪᴅꜱ
-• /groups - ɢʀᴏᴜᴘ ʟɪꜱᴛ & ɪᴅꜱ
+• /groups - ɢʀᴏᴜᴘ ʟɪꜱᴛ & ɪᴅꜱ where bot is admin
 • /leave - ʟᴇᴀᴠᴇ ᴄʜᴀᴛ
 • /ban_grp - ᴅɪꜱᴀʙʟᴇ ᴄʜᴀᴛ
 • /unban_grp - ᴇɴᴀʙʟᴇ ᴄʜᴀᴛ
 • /ban_user - ʙᴀɴ ᴜꜱᴇʀ
 • /unban_user - ᴜɴʙᴀɴ ᴜꜱᴇʀ
+• /reset_grp_data - Reset group settings to default configuration.
+• /details - Show current group configuration and settings.
+• /setgs - Toggle group settings (auto-filter, imdb, spell check, auto-delete, etc.) Used via inline buttons after `/details`.
+• /group_pm - Manage group settings from private chat.
+• /group_cmd - Check all group comments 
+• /clear_junk - clear un-used group
 
 <b>📢 ᴍᴇꜱꜱᴀɢɪɴɢ</b>
 • /broadcast - ᴍꜱɢ ᴛᴏ ᴀʟʟ ᴜꜱᴇʀꜱ
@@ -42,8 +55,8 @@ class script(object):
 • /send - ᴍꜱɢ ᴛᴏ ꜱᴘᴇᴄɪꜰɪᴄ ᴜꜱᴇʀ
 
 <b>💎 ᴘʀᴇᴍɪᴜᴍ</b>
-• /add_premium - ᴀᴅᴅ ᴘʀᴇᴍɪᴜᴍ
-• /remove_premium - ʀᴇᴍᴏᴠᴇ ᴘʀᴇᴍɪᴜᴍ
+• /add_premium `<user_id>` `<time>` - Grant premium access to a user for a specified duration (e.g. `1day`, `1month`, `2hours`).
+• /remove_premium `<user_id>` - Remove premium access from a user.
 • /premium_users - ᴘʀᴇᴍɪᴜᴍ ʟɪꜱᴛ
 • /check_premium - ᴄʜᴇᴄᴋ ᴘʀᴇᴍɪᴜᴍ ɪɴꜰᴏ
 • /add_redeem - ᴀᴅᴅ ʀᴇᴅᴇᴇᴍ ᴄᴏᴅᴇ
