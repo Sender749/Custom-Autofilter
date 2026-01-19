@@ -1191,21 +1191,22 @@ async def cb_handler(client: Client, query: CallbackQuery):
     elif query.data.startswith("spl_wrong"):
         ident, user_id, msg_id = query.data.split("#")
         chnl_id = query.message.chat.id
-        admin_id = query.from_user.id
-        st = await client.get_chat_member(chnl_id, admin_id)
+        st = await client.get_chat_member(chnl_id, query.from_user.id)
         if st.status not in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]:
             return await query.answer(script.ALRT_TXT, show_alert=True)
-        WRONG_SPELL_WAIT[admin_id] = {
-            "user_id": int(user_id),
-            "msg_id": int(msg_id),
-            "request_msg": query.message
-        }
-        await query.answer()
-        await client.send_message(
+        prompt = await client.send_message(
             chnl_id,
             "✏️ <b>Send correct spelling</b>",
             reply_to_message_id=query.message.id
         )
+        WRONG_SPELL_WAIT[prompt.id] = {
+            "user_id": int(user_id),
+            "msg_id": int(msg_id),
+            "request_msg": query.message,
+            "prompt_id": prompt.id
+        }
+        await query.answer()
+
 
     elif query.data.startswith("rj_alert"):
         ident, user_id = query.data.split("#")
@@ -1270,23 +1271,24 @@ async def cb_handler(client: Client, query: CallbackQuery):
         else:
             await query.answer(script.ALRT_TXT, show_alert=True)
 
-@Client.on_message(filters.text & filters.chat(REQUEST_CHANNEL))
+@Client.on_message(filters.text & filters.reply & filters.chat(REQUEST_CHANNEL))
 async def handle_wrong_spelling_input(client, message):
-    admin_id = message.from_user.id if message.from_user else None
-    if not admin_id:
+    reply = message.reply_to_message
+    if not reply:
         return
-    if admin_id not in WRONG_SPELL_WAIT:
+    data = WRONG_SPELL_WAIT.pop(reply.id, None)
+    if not data:
         return
-    data = WRONG_SPELL_WAIT.pop(admin_id)
     correct_name = message.text.strip()
     request_msg = data["request_msg"]
     user_id = data["user_id"]
+    msg_id = data["msg_id"]
     try:
         await message.delete()
     except:
         pass
     try:
-        await request_msg.reply_to_message.delete()
+        await reply.delete()
     except:
         pass
     old_text = request_msg.text or request_msg.caption or "Request"
@@ -1316,6 +1318,7 @@ async def handle_wrong_spelling_input(client, message):
                 f"✅ Correct Spelling – <code>{correct_name}</code></b>"
             ),
             reply_markup=InlineKeyboardMarkup(user_buttons)
+            reply_to_message_id=msg_id
         )
             
 async def ai_spell_check(wrong_name):
