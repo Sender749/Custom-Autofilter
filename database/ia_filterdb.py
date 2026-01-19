@@ -115,10 +115,10 @@ async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
         filter = {'file_name': regex}
 
     result_map = {}
-    for doc in collection.find(mongo_filter):
+    for doc in collection.find(filter):
         result_map[doc['_id']] = doc
     if SECOND_FILES_DATABASE_URL:
-        for doc in second_collection.find(mongo_filter):
+        for doc in second_collection.find(filter):
             result_map.setdefault(doc['_id'], doc)
     results = list(result_map.values())
 
