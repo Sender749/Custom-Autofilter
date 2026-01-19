@@ -531,14 +531,12 @@ async def suggestion_click_handler(client, query: CallbackQuery):
     await auto_filter(client, msg)
 
 async def trigger_auto_request(bot, message, search):
-    class _Q:
-        def __init__(self):
-            self.data = f"req_admin#{search}#{message.from_user.id}"
-            self.from_user = message.from_user
-            self.message = None  
-        async def answer(self, *a, **k):
-            return
-    await request_to_admin(bot, _Q())
+    await send_request_common(
+        bot,
+        user=message.from_user,
+        search=search,
+        origin_message=message
+    )
     
 def get_safe_message_link(message):
     try:
@@ -548,30 +546,59 @@ def get_safe_message_link(message):
         pass
     return None
 
-@Client.on_callback_query(filters.regex(r"^req_admin"))
-async def request_to_admin(bot, query):
-    _, search, user_id = query.data.split('#')
-    msg_link = get_safe_message_link(query.message)
-    if int(user_id) != query.from_user.id:
-        return await query.answer(script.ALRT_TXT, show_alert=True)
+async def send_request_common(
+    bot,
+    *,
+    user,
+    search,
+    origin_message=None
+):
     buttons = []
-    if msg_link:
-        buttons.append([InlineKeyboardButton('👀 View Request', url=msg_link)])
+    if origin_message and origin_message.chat.type in ("group", "supergroup"):
+        buttons.append([
+            InlineKeyboardButton("👀 View Request", url=origin_message.link)
+        ])
     else:
-        buttons.append([InlineKeyboardButton('👀 View Request', callback_data=f"view_req_info#{query.from_user.id}")])
-    buttons.append([InlineKeyboardButton('⚙ Show Options', callback_data=f'show_options#{query.from_user.id}#{query.message.id if query.message else 0}')])
-    sent_request = await bot.send_message(
+        buttons.append([
+            InlineKeyboardButton(
+                "👀 View Request",
+                callback_data=f"view_req_info#{user.id}"
+            )
+        ])
+    buttons.append([
+        InlineKeyboardButton(
+            "⚙ Show Options",
+            callback_data=f"show_options#{user.id}#{origin_message.id if origin_message else 0}"
+        )
+    ])
+    sent = await bot.send_message(
         REQUEST_CHANNEL,
-        script.REQUEST_TXT.format(query.from_user.mention, query.from_user.id, search),
+        script.REQUEST_TXT.format(
+            user.mention,
+            user.id,
+            search
+        ),
         reply_markup=InlineKeyboardMarkup(buttons)
     )
-    btn = [[
-        InlineKeyboardButton('✨ ᴠɪᴇᴡ ʏᴏᴜʀ ʀᴇᴏ̨ᴜᴇsᴛ ✨', url=f"{sent_request.link}")
+    user_btn = [[
+        InlineKeyboardButton("✨ View Your Request ✨", url=sent.link)
     ]]
     await bot.send_message(
-        chat_id=query.from_user.id,
+        chat_id=user.id,
         text="<b>✅ Your request has been sent to admin!</b>",
-        reply_markup=InlineKeyboardMarkup(btn)
+        reply_markup=InlineKeyboardMarkup(user_btn)
+    )
+
+@Client.on_callback_query(filters.regex(r"^req_admin"))
+async def request_to_admin(bot, query):
+    _, search, user_id = query.data.split("#")
+    if int(user_id) != query.from_user.id:
+        return await query.answer(script.ALRT_TXT, show_alert=True)
+    await send_request_common(
+        bot,
+        user=query.from_user,
+        search=search,
+        origin_message=query.message
     )
     await query.answer()
     
