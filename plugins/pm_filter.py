@@ -1220,8 +1220,6 @@ async def cb_handler(client: Client, query: CallbackQuery):
         else:
             await query.answer(script.ALRT_TXT, show_alert=True)
 
-
-@Client.on_message(filters.text & filters.chat(REQUEST_CHANNEL))
 async def handle_wrong_spelling_input(client, message):
     admin_id = message.from_user.id
     if admin_id not in WRONG_SPELL_WAIT:
