@@ -736,7 +736,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
                 InlineKeyboardButton('⇆ ᴀᴅᴅ ᴍᴇ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘs ⇆', url=f'http://t.me/{temp.U_NAME}?startgroup=start')
             ],
             [
-                InlineKeyboardButton('• ꜰᴇᴀᴛᴜʀᴇs', callback_data='features'),
+                InlineKeyboardButton('• ʀᴇғᴇʀ', callback_data='reff'),
                 InlineKeyboardButton('• ᴜᴘɢʀᴀᴅᴇ', callback_data='premium')
             ]
         ]
