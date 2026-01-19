@@ -725,7 +725,6 @@ async def send_request(bot, message):
     ]]
     await message.reply_text("<b>✅ sᴜᴄᴄᴇꜱꜱғᴜʟʟʏ ʏᴏᴜʀ ʀᴇǫᴜᴇꜱᴛ ʜᴀꜱ ʙᴇᴇɴ ᴀᴅᴅᴇᴅ, ᴘʟᴇᴀꜱᴇ ᴡᴀɪᴛ ꜱᴏᴍᴇᴛɪᴍᴇ...</b>", reply_markup=InlineKeyboardMarkup(btn))
 
-
 @Client.on_message(filters.command('set_caption'))
 async def save_caption(client, message):
     sili = silicondb.get_bot_sttgs()
