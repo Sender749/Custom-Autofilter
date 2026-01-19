@@ -530,6 +530,18 @@ async def suggestion_click_handler(client, query: CallbackQuery):
     fake_msg.from_suggestion = True
     await auto_filter(client, fake_msg)
     await query.answer("🔍 Searching...")
+    
+async def auto_trigger_req_admin(bot, message, search):
+    class FakeQuery:
+        def __init__(self, bot, message, search):
+            self.data = f"req_admin#{search}#{message.from_user.id}"
+            self.from_user = message.from_user
+            self.message = message
+            self._bot = bot
+        async def answer(self, *args, **kwargs):
+            return
+    fake_query = FakeQuery(bot, message, search)
+    await request_to_admin(bot, fake_query)
 
 @Client.on_callback_query(filters.regex(r"^req_admin"))
 async def request_to_admin(bot, query):
@@ -1307,7 +1319,7 @@ async def auto_filter(client, msg, spoll=False):
         await search_msg.delete()
         if not files:
             if getattr(msg, "from_suggestion", False):
-                await auto_request_via_request_cmd(client, message, search)
+                await auto_trigger_req_admin(client, message, search)
                 return
             if settings["spell_check"]:
                 ai_sts = await msg.reply_text('<b>👾 ᴀɪ ɪs ᴄʜᴇᴄᴋɪɴɢ ꜰᴏʀ ʏᴏᴜʀ sᴘᴇʟʟɪɴɢ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</b>')
