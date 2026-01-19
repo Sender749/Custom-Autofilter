@@ -1197,7 +1197,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
         prompt = await client.send_message(
             chnl_id,
             "✏️ <b>Send correct spelling</b>",
-            reply_to_message_id=query.message.id
+            reply_to_message_id=query.message.id,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_wrong#{query.message.id}")]])
         )
         WRONG_SPELL_WAIT[prompt.id] = {
