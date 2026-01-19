@@ -636,6 +636,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             caption=script.PREMIUM_TEXT,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton('🎁 ʀᴇꜰᴇʀ ᴛᴏ ɢᴇᴛ ᴘʀᴇᴍɪᴜᴍ 🎁', callback_data='reff')],
+                [InlineKeyboardButton('👤 ᴏᴡɴᴇʀ', url=USERNAME)],
                 [InlineKeyboardButton('ᴄʟᴏsᴇ', callback_data='close_data')]
             ]))
 
