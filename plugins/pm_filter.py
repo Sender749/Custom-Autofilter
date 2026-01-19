@@ -1234,13 +1234,14 @@ async def handle_wrong_spelling_input(client, message):
     request_msg = data["request_msg"]
     user_id = data["user_id"]
     msg_id = data["msg_id"]
+    old_text = request_msg.text or request_msg.caption or "Request"
     status_btn = [[
         InlineKeyboardButton(
             "✏️ ᴜᴘʟᴏᴀᴅᴇᴅ (ᴡʀᴏɴɢ sᴘᴇʟʟɪɴɢ)",
             callback_data=f"ulws_alert#{user_id}"
         )
     ]]
-    await request_msg.edit_text(f"<s>{request_msg.text}</s>")
+    await request_msg.edit_text(f"<s>{old_text}</s>")
     await request_msg.edit_reply_markup(InlineKeyboardMarkup(status_btn))
     user_buttons = [
         [InlineKeyboardButton("👥 Movie Group", url=MOVIE_GROUP_LINK)],
