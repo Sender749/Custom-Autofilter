@@ -537,6 +537,21 @@ async def trigger_auto_request(bot, message, search):
         search=search,
         origin_message=message
     )
+    try:
+        if message.chat.type in ("group", "supergroup"):
+            await message.reply_text(
+                "📮 <b>Your request was sent to admin.</b>\n\n"
+                "⏳ Please wait for admin response.",
+                reply_to_message_id=message.id
+            )
+        else:
+            await bot.send_message(
+                chat_id=message.from_user.id,
+                text="📮 <b>Your request was sent to admin.</b>\n\n"
+                     "⏳ Please wait for admin response."
+            )
+    except:
+        pass
     
 def get_safe_message_link(message):
     try:
