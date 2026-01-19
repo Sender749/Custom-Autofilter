@@ -983,7 +983,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             InlineKeyboardButton("ᴜᴘʟᴏᴀᴅᴇᴅ", callback_data=f"uploaded#{user_id}#{msg_id}"),
             InlineKeyboardButton("ɴᴏᴛ ᴀᴠᴀɪʟᴀʙʟᴇ", callback_data=f"not_available#{user_id}#{msg_id}")
         ],[
-            InlineKeyboardButton("ᴜᴘʟᴏᴀᴅᴇᴅ, ᴡʀᴏɴɢ sᴘᴇʟʟɪɴɢ", callback_data=f"#{user_id}#{msg_id}")
+            InlineKeyboardButton("ᴜᴘʟᴏᴀᴅᴇᴅ, ᴡʀᴏɴɢ sᴘᴇʟʟɪɴɢ", callback_data=f"uploaded_wrong"#{user_id}#{msg_id}")
         ]]
         try:
             st = await client.get_chat_member(chnl_id, userid)
