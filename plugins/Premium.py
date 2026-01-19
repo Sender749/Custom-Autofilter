@@ -2,7 +2,7 @@ import re, pytz, random, string, hashlib
 from datetime import datetime, timedelta
 from asyncio import sleep 
 import datetime, time
-from info import ADMINS, LOG_CHANNEL, QR_CODE 
+from info import ADMINS, LOG_CHANNEL, QR_CODE, USERNAME
 from Script import script 
 from utils import get_seconds, get_status, temp
 from database.users_chats_db import db 
@@ -115,9 +115,9 @@ async def plan(client, message):
         user_info = f"{message.from_user.mention}"
     log_message = f"<b><u>🚫 ᴛʜɪs ᴜsᴇʀs ᴛʀʏ ᴛᴏ ᴄʜᴇᴄᴋ /plan</u> {temp.B_LINK}\n\n- ɪᴅ - `{user_id}`\n- ɴᴀᴍᴇ - {user_info}</b>"
     btn = [
-        [
-        InlineKeyboardButton("🗑 ᴄʟᴏsᴇ / ᴅᴇʟᴇᴛᴇ 🗑", callback_data="close_data")
-    ]]
+        [InlineKeyboardButton("👤 ᴏᴡɴᴇʀ", url=USERNAME)],
+        [InlineKeyboardButton("🗑 ᴄʟᴏsᴇ / ᴅᴇʟᴇᴛᴇ 🗑", callback_data="close_data")]
+    ]
     await message.reply_photo(
         photo=(QR_CODE),
         caption=script.PREMIUM_TEXT, 
