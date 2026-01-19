@@ -1307,7 +1307,7 @@ async def auto_filter(client, msg, spoll=False):
         await search_msg.delete()
         if not files:
             if getattr(msg, "from_suggestion", False):
-                await trigger_auto_request(client, message, search)
+                await send_request_to_admin(client, message.from_user, search, message)
                 return
             if settings["spell_check"]:
                 ai_sts = await msg.reply_text('<b>👾 ᴀɪ ɪs ᴄʜᴇᴄᴋɪɴɢ ꜰᴏʀ ʏᴏᴜʀ sᴘᴇʟʟɪɴɢ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</b>')
@@ -1471,16 +1471,25 @@ async def auto_filter(client, msg, spoll=False):
     if k and settings.get("auto_delete"):
         asyncio.create_task(handle_auto_delete(k))
 
-async def trigger_auto_request(client, message, search):
-    fake_data = f"req_admin#{search}#{message.from_user.id}"
-    class FakeQuery:
-        data = fake_data
-        from_user = message.from_user
-        message = message
-        async def answer(self, *args, **kwargs):
-            return
-    fake_query = FakeQuery()
-    await request_to_admin(client, fake_query)
+async def send_request_to_admin(bot, user, search, source_msg):
+    buttons = [[
+        InlineKeyboardButton('👀 View Request', url=source_msg.link)
+    ],[
+        InlineKeyboardButton('⚙ Show Options', callback_data=f'show_options#{user.id}#{source_msg.id}')
+    ]]
+    sent = await bot.send_message(
+        REQUEST_CHANNEL,
+        script.REQUEST_TXT.format(user.mention, user.id, search),
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    user_btn = [[
+        InlineKeyboardButton('✨ View Your Request ✨', url=sent.link)
+    ]]
+    await source_msg.reply_text(
+        "<b>✅ Your request has been sent to admin!</b>",
+        reply_markup=InlineKeyboardMarkup(user_btn)
+    )
+    return sent
 
 async def show_suggestions(bot, message, query):
     try:
