@@ -519,10 +519,11 @@ async def spoll_checker(bot, query):
 async def suggestion_click_handler(client, query: CallbackQuery):
     title = query.data.split("#", 1)[1]
     SUGGESTION_TRACKER.get(query.message.id, {})["clicked"] = True
-    try:
-        await query.message.delete()
-    except:
-        pass
+    if query.message.chat.type == "private":
+        try:
+            await query.message.delete()
+        except:
+            pass
     msg = query.message
     msg.text = title
     msg.from_suggestion = True
@@ -538,17 +539,27 @@ async def trigger_auto_request(bot, message, search):
         async def answer(self, *a, **k):
             return
     await request_to_admin(bot, _Q())
+    
+def get_safe_message_link(message):
+    try:
+        if message and message.chat and message.chat.type in ["group", "supergroup"]:
+            return message.link
+    except:
+        pass
+    return None
 
 @Client.on_callback_query(filters.regex(r"^req_admin"))
 async def request_to_admin(bot, query):
     _, search, user_id = query.data.split('#')
+    msg_link = get_safe_message_link(query.message)
     if int(user_id) != query.from_user.id:
         return await query.answer(script.ALRT_TXT, show_alert=True)
-    buttons = [[
-        InlineKeyboardButton('👀 View Request', url=f"{query.message.link}")
-    ],[
-        InlineKeyboardButton('⚙ Show Options', callback_data=f'show_options#{query.from_user.id}#{query.message.id}')
-    ]]
+    buttons = []
+    if msg_link:
+        buttons.append([InlineKeyboardButton('👀 View Request', url=msg_link)])
+    else:
+        buttons.append([InlineKeyboardButton('👀 View Request', callback_data=f"view_req_info#{query.from_user.id}")])
+    buttons.append([InlineKeyboardButton('⚙ Show Options', callback_data=f'show_options#{query.from_user.id}#{query.message.id if query.message else 0}')])
     sent_request = await bot.send_message(
         REQUEST_CHANNEL,
         script.REQUEST_TXT.format(query.from_user.mention, query.from_user.id, search),
@@ -575,6 +586,15 @@ async def cb_handler(client: Client, query: CallbackQuery):
             return await query.answer(script.ALRT_TXT, show_alert=True)
         await query.answer("ᴛʜᴀɴᴋs ꜰᴏʀ ᴄʟᴏsᴇ 🙈")
         await query.message.delete()
+
+    elif query.data.startswith("view_req_info"):
+        _, user_id = query.data.split("#")
+        if query.from_user.id != int(user_id):
+            return await query.answer(script.ALRT_TXT, show_alert=True)
+        await query.answer(
+            "ℹ️ This request was sent from private chat or the original message was deleted.",
+            show_alert=True
+        )
 
     elif query.data == "premium":
         userid = query.from_user.id
@@ -1219,7 +1239,12 @@ async def cb_handler(client: Client, query: CallbackQuery):
 
 @Client.on_message(filters.chat(REQUEST_CHANNEL) & filters.text)
 async def handle_wrong_spelling_input(client, message):
-    admin_id = message.from_user.id
+    if message.from_user:
+        admin_id = message.from_user.id
+    elif message.sender_chat:
+        admin_id = message.sender_chat.id
+    else:
+        return
     if admin_id not in WRONG_SPELL_WAIT:
         return
     data = WRONG_SPELL_WAIT.pop(admin_id)
@@ -1232,11 +1257,7 @@ async def handle_wrong_spelling_input(client, message):
     user_id = data["user_id"]
     msg_id = data["msg_id"]
     old_text = request_msg.text or request_msg.caption or "Request"
-    status_btn = [[
-        InlineKeyboardButton(
-            "✏️ ᴜᴘʟᴏᴀᴅᴇᴅ (ᴡʀᴏɴɢ sᴘᴇʟʟɪɴɢ)",
-            callback_data=f"ulws_alert#{user_id}"
-        )
+    status_btn = [[InlineKeyboardButton("✏️ ᴜᴘʟᴏᴀᴅᴇᴅ (ᴡʀᴏɴɢ sᴘᴇʟʟɪɴɢ)", callback_data=f"ulws_alert#{user_id}")
     ]]
     await request_msg.edit_text(f"<s>{old_text}</s>")
     await request_msg.edit_reply_markup(InlineKeyboardMarkup(status_btn))
