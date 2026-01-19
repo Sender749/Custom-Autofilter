@@ -430,25 +430,6 @@ watch_tmplt = """
             </button>
         </div>
        
-        <div class="info-section">
-          <div class="disclaimer">
-            <strong>Disclaimer:</strong> We do not host any files on our server. All content provided on this platform is indexed from publicly available sources on the internet. We do not take responsibility for the content or its availability.
-          </div>
-          
-          <div class="copyright">
-            <p>This code was developed by <strong>Silicon Developer</strong> and is protected under copyright law.</p>
-            <p>© 2025 Filmax Player. All rights reserved.</p>
-          </div>
-          
-          <div class="social-links">
-            <a href="https://t.me/Silicon_Bot_Update" class="social-link" target="_blank">
-              <i class="fab fa-telegram"></i>
-            </a>
-            <a href="https://github.com/Silicon-Developer" class="social-link" target="_blank">
-              <i class="fab fa-github"></i>
-            </a>
-            <a href="https://twitter.com" class="social-link" target="_blank">
-              <i class="fab fa-twitter"></i>
             </a>
           </div>
         </div>
