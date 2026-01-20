@@ -19,7 +19,18 @@ import base64
 from info import *
 
 logger = logging.getLogger(__name__)
-LOADING_STICKER = "CAACAgUAAxkBAAEB-loading-sticker-id"
+LOADING_STICKERS = ["CAACAgUAAxkBAAEQR9tpb02Z8WJYIdLtrHq1BfOm78SakgAC7wMAAojPcVSVdXyIjYK3YzgE", "CAACAgUAAxkBAAEQR91pb1PBZs1RkgNPbvz4R4uAhen0WAAC3QoAAolXYVcZgdLdkM0yrDgE", "CAACAgUAAxkBAAEQR99pb1PYodIZXoVawSyA13QO8gMhpQACfRMAAs66uVSPrtq3foCoTzgE"
+                    "CAACAgUAAxkBAAEQSDdpb2MZHxMaGFgWZgiMlJDJWEEKqwACTAQAAvWxgFRnWMRk5MnY_TgE", "CAACAgUAAxkBAAEQSDVpb2LNKwphMVPW0U0aYV3ylcjSPAACTRcAAoliCVeDv3rJvEVWpzgE", "CAACAgQAAxkBAAEQSDNpb2JxzjJ7cVFSnjLOWZ7TCZWQLAACaBcAAs-6CFHMEhyjHCf2izgE",
+                    "CAACAgQAAxkBAAEQSDFpb2JEIluDR1PmfWwO2ChGlTsHEgACkxsAArm_EVH3KYCxd4DV0DgE", "CAACAgQAAxkBAAEQSC9pb2I-FVTJRqEEtlEG0fEbv5GkpQACoBYAAkonCVEraALlyN5c0jgE", "CAACAgQAAxkBAAEQSC1pb2I0a1uFpny3tdBTB3oca6__rgACpRcAAqFyCVEIhIMkevWwdzgE",
+                    "CAACAgQAAxkBAAEQSCtpb2IpzD4g-BUKYqFxMDWM5cU53gACnBcAApg5CFGCow22gMrl7jgE", "CAACAgQAAxkBAAEQSClpb2IJr2xtZQTGwl9jjxvt66NPugACbRYAAt9fqFFND0p9LloChDgE", "CAACAgQAAxkBAAEQSCdpb2IGNWfj1RJ1DV4repHArk678AACnxgAAoTjqVGZ3vrIfWl3NjgE",
+                    "CAACAgQAAxkBAAEQSCVpb2H2sZ58bCpWKAABwZ0JmQAB-5yeAAL4EgACfClwUvWViQ0UWuBrOAQ", "CAACAgQAAxkBAAEQSCNpb2HvVMjpl5TxnHcF-Gkxo2RHUQAClRYAApVmkFLWpeMaQl4UEzgE", "CAACAgIAAxkBAAEQSCFpb2HQUuto5OiEx9VypVgJrZE8kgACpBoAAoGRaElgcAG3XyadUDgE",
+                    "CAACAgUAAxkBAAEQSB9pb2GhQiuz1TskLXmSpQxIJ9ZSNQACgw0AAib68VR4zcm69mBB_TgE", "CAACAgUAAxkBAAEQSB1pb2GVNDJwXpnd0Dd1qnvIyWyu2AACjRAAAg32qVSOcCcw_jyyKDgE", "CAACAgUAAxkBAAEQSBtpb2F_T1_5DMvgg4FL_7NlP9u-RQAC0w8AAkqFOFSfVsMZLfejqzgE",
+                    "CAACAgUAAxkBAAEQSBlpb2FsU52Uh-p4ugdlDBzTSnlHygACHA8AAsVoOVTMj9An8nJo6zgE", "CAACAgUAAxkBAAEQSBdpb2Fr7ALffFa15PTpI5lrZJFr5gAC4BEAAj4iOVRYeqPQh0TBuTgE", "CAACAgUAAxkBAAEQSBVpb2FkWJ0y6z4OFR7WBRlBmHo4QgACJQ8AArmtOVSMcXk0AAFqgLI4BA",
+                    "CAACAgUAAxkBAAEQSBJpb2FeoTOOu9zBun1d1i0havOz_wACMBAAAuOxMFT-WGSVuptSOTgE", "CAACAgUAAxkBAAEQSBFpb2Fe4WB0H8_gRxBuG8WFmb9OVQACgRQAAsvZMFTbs-adjmy5gjgE", "CAACAgUAAxkBAAEQSA9pb2FU8gcuPjhAOZQZkSCFq8jZOAACMhMAAsP-OFR3JMwQCnichTgE", 
+                    "CAACAgUAAxkBAAEQSA1pb2FAeAXD1Xbi0x9amo7PH3V2ZwACyhUAAvHNEFRgP17orog5yjgE", "CAACAgUAAxkBAAEQSAtpb2E6YcaHnMZIYGqSdHxlpnTN-gACEBAAApXxGFR5cyVI1ivc9jgE", "CAACAgUAAxkBAAEQSAlpb2E1FMfaGPXTwngfY2vJ5ciPMQACyxQAAk-xGFTviYpKjs352jgE",
+                    "CAACAgUAAxkBAAEQSAdpb2Et1nvN0ZoIPCJHT9VPo3DwKwACkA8AAow7GFTGMpgsWke7djgE", "CAACAgUAAxkBAAEQSAVpb2EhPVOrMM0O8gAB1qfc21zgBd8AAuYTAAJ3DRhUmdgdNcd8wMo4BA", "CAACAgUAAxkBAAEQSANpb2EAAXeOvdw11Lbnv-kpDJ7JsZ4AAtoUAAKrXRlUES-joZzGM8s4BA",
+                    "CAACAgUAAxkBAAEQSAFpb2D2m46i6wZELW0zOS_DUWJt8AACuRAAAn1eEFTDWBURNGj7fDgE", "CAACAgUAAxkBAAEQR_9pb2Drqr4p6CMof_Q0MJunxFoiQwACEQ8AAtaPGFRxp_MIy2mCsDgE"
+                   ]
 
 @Client.on_message(filters.command("start") & filters.incoming)
 async def start(client: Client, message): 
@@ -170,7 +181,7 @@ async def start(client: Client, message):
     loading = None
     if data and (data.startswith("file_") or data.startswith("allfiles")):
         try:
-            loading = await message.reply_sticker(LOADING_STICKER)
+            loading = await message.reply_sticker(random.choice(LOADING_STICKERS))
         except:
             loading = None
     if not await db.has_premium_access(message.from_user.id):
@@ -290,17 +301,17 @@ async def start(client: Client, message):
                 ) + file_limit_info
 
                 btn = [[InlineKeyboardButton("✛ ᴡᴀᴛᴄʜ & ᴅᴏᴡɴʟᴏᴀᴅ ✛", callback_data=f'stream#{file_id}')]]
+                if loading:
+                    try:
+                        await loading.delete()
+                    except:
+                        pass
                 toDel = await client.send_cached_media(
                     chat_id=message.from_user.id,
                     file_id=file_id,
                     caption=f_caption,
                     reply_markup=InlineKeyboardMarkup(btn)
                 )
-                if loading:
-                    try:
-                        await loading.delete()
-                    except:
-                        pass
 
                 time_text = f'{FILE_AUTO_DEL_TIMER / 60} ᴍɪɴᴜᴛᴇs' if FILE_AUTO_DEL_TIMER >= 60 else f'{FILE_AUTO_DEL_TIMER} sᴇᴄᴏɴᴅs'
                 delCap = f"<b>ʏᴏᴜʀ ғɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀғᴛᴇʀ {time_text} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ᴠɪᴏʟᴀᴛɪᴏɴs!</b>"
@@ -346,6 +357,11 @@ async def start(client: Client, message):
     if data and data.startswith("allfiles"):
         _, key = data.split("_", 1)
         files = temp.FILES_ID.get(key)
+        if loading:
+            try:
+                await loading.delete()
+            except:
+                pass
         if not files:
             await message.reply_text("<b>⚠️ ᴀʟʟ ꜰɪʟᴇs ɴᴏᴛ ꜰᴏᴜɴᴅ ⚠️</b>")
             return
@@ -368,11 +384,6 @@ async def start(client: Client, message):
                 caption=f_caption,
                 reply_markup=InlineKeyboardMarkup(btn)
              )
-            if loading:
-                try:
-                    await loading.delete()
-                except:
-                    pass
             files_to_delete.append(toDel)
 
         time_text = f'{FILE_AUTO_DEL_TIMER / 60} ᴍɪɴᴜᴛᴇs' if FILE_AUTO_DEL_TIMER >= 60 else f'{FILE_AUTO_DEL_TIMER} sᴇᴄᴏɴᴅs'
@@ -426,17 +437,17 @@ async def start(client: Client, message):
     )
 
     btn = [[InlineKeyboardButton("✛ ᴡᴀᴛᴄʜ & ᴅᴏᴡɴʟᴏᴀᴅ ✛", callback_data=f'stream#{file_id}')]]
+    if loading:
+        try:
+            await loading.delete()
+        except:
+            pass
     toDel = await client.send_cached_media(
         chat_id=message.from_user.id,
         file_id=file_id,
         caption=f_caption,
         reply_markup=InlineKeyboardMarkup(btn)
     )
-    if loading:
-        try:
-            await loading.delete()
-        except:
-            pass
     time_text = f'{FILE_AUTO_DEL_TIMER / 60} ᴍɪɴᴜᴛᴇs' if FILE_AUTO_DEL_TIMER >= 60 else f'{FILE_AUTO_DEL_TIMER} sᴇᴄᴏɴᴅs'
     delCap = f"<b>ʏᴏᴜʀ ғɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀғᴛᴇʀ {time_text} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ᴠɪᴏʟᴀᴛɪᴏɴs!</b>"
     afterDelCap = f"<b>ʏᴏᴜʀ ғɪʟᴇ ɪs ᴅᴇʟᴇᴛᴇᴅ ᴀғᴛᴇʀ {time_text} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ᴠɪᴏʟᴀᴛɪᴏɴs!</b>"
