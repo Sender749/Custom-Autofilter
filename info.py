@@ -28,8 +28,8 @@ MOVIE_GROUP_LINK = environ.get('MOVIE_GROUP_LINK', 'https://t.me/Navex_Movies')
 
 # Pics 
 
-QR_CODE = environ.get('QR_CODE', 's://envs.sh/iKu.jpg https://envs.sh/iKE.jpg https://envs.sh/iKe.jpg https://envs.sh/iKi.jpg https://envs.sh/iKb.jpg')
-START_IMG = environ.get('START_IMG', 'https://i.ibb.co/LdT5fdJY/photo-2025-08-13-01-12-38-7537871916074270724.jpg')
+QR_CODE = environ.get('QR_CODE', 'https://envs.sh/iKI.jpg')
+START_IMG = environ.get('START_IMG', 'https://envs.sh/iKu.jpg https://envs.sh/iKE.jpg https://envs.sh/iKe.jpg https://envs.sh/iKi.jpg https://envs.sh/iKb.jpg')
 FSUB_PICS = (environ.get('FSUB_PICS', 'https://graph.org/file/7478ff3eac37f4329c3d8.jpg https://graph.org/file/56b5deb73f3b132e2bb73.jpg')).split() 
 
 # File Limit
@@ -125,9 +125,9 @@ BIN_CHANNEL = environ.get("BIN_CHANNEL", "-1002262450769") # Channel Where Files
 if len(BIN_CHANNEL) == 0:
     print('Error BIN_CHANNEL is missing, exiting now')
     exit()
-else:
+else:                 
     BIN_CHANNEL = int(BIN_CHANNEL)
-URL = environ.get("URL", "https://human-genia-naha-f2239233.koyeb.app/") #App URL Where you deployed
+URL = environ.get("URL", "https://precious-mab-filetokensender-fdc78bed.koyeb.app/") #App URL Where you deployed
 if len(URL) == 0:
     print('error URL is missing, exiting now')   
     exit()
