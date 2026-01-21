@@ -58,8 +58,8 @@ async def start(client: Client, message):
         return [
             [InlineKeyboardButton('⇆ ᴀᴅᴅ ᴍᴇ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘs ⇆', url=f'http://t.me/{temp.U_NAME}?startgroup=start')],
             [
-                InlineKeyboardButton('• ꜰᴇᴀᴛᴜʀᴇs', callback_data='features'),
-                InlineKeyboardButton('• ᴜᴘɢʀᴀᴅᴇ', callback_data='premium')
+                InlineKeyboardButton('• Rᴇғᴇʀ', callback_data='reff'),
+                InlineKeyboardButton('• Pʀᴇᴍɪᴜᴍ', callback_data='premium')
             ]
         ]
 
