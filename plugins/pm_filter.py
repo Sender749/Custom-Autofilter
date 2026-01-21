@@ -1612,9 +1612,9 @@ async def show_suggestions(bot, message, query):
     ])
     text = (
         f"<b>😕 I couldn't find any exact results for: <code>{query}</code></b>\n\n"
-        f"✅ If one of these matches your request, tap it.\n"
-        f"📩 If your spelling is correct, you can request it from admin.\n"
-        f"🌐 Or use Google to double-check the title spelling.\n"
+        #f"✅ If one of these matches your request, tap it.\n"
+        #f"📩 If your spelling is correct, you can request it from admin.\n"
+        #f"🌐 Or use Google to double-check the title spelling.\n"
         f"<b>🔎 These are some related titles you might be looking for 👇</b>"
     )
     sent = await message.reply_text(
