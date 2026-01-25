@@ -36,9 +36,10 @@ async def pm_search(client, message):
         return
     sili = silicondb.get_bot_sttgs()
     if not sili.get('PM_SEARCH', False) if sili else False:
-        return await message.reply_text('<b><i>ᴘᴍ sᴇᴀʀᴄʜ ᴡᴀs ᴅɪsᴀʙʟᴇᴅ sᴇᴀʀᴄʜ ɪɴ ᴍᴏᴠɪᴇ ɢʀᴏᴜᴘ!</i></b>')
+        return await message.reply_text('<b><i>ɪ ᴀᴍ ɴᴏᴛ ᴡᴏʀᴋɪɴɢ ʜᴇʀᴇ. ꜱᴇᴀʀᴄʜ ᴍᴏᴠɪᴇꜱ ɪɴ ᴏᴜʀ ᴍᴏᴠɪᴇ ꜱᴇᴀʀᴄʜ ɢʀᴏᴜᴘ.</i></b>',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📝 ᴍᴏᴠɪᴇ ꜱᴇᴀʀᴄʜ ɢʀᴏᴜᴘ",url="https://t.me/Navex_Movies")]]))
     if not sili.get('AUTO_FILTER', True) if sili else True:
-        return await message.reply_text('<b><i>ᴀᴜᴛᴏ ꜰɪʟᴛᴇʀ ᴡᴀs ᴅɪsᴀʙʟᴇᴅ!</i></b>')
+        return await message.reply_text('<b><i>ᴄᴜʀʀᴇɴᴛʟʏ, ʙᴏᴛ ᴡᴀs ᴜɴᴅᴇʀ ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ. ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</i></b>')
     await auto_filter(client, message)
     
 def get_display_name(file: dict) -> str:
