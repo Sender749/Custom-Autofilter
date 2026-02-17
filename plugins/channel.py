@@ -326,6 +326,16 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
         )
         movie_doc["files"].append(file_data)
         schedule_update(bot, base_name)
+        
+async def auto_delete_update(bot, message_id):
+    await asyncio.sleep(172800)  # 2 days = 48*60*60 = 172800 seconds
+    try:
+        await bot.delete_messages(
+            chat_id=MOVIE_UPDATE_CHANNEL,
+            message_ids=message_id
+        )
+    except Exception as e:
+        logger.error(f"Auto delete failed: {e}")
 
 async def send_movie_update(bot, base_name):
     max_retries = 3
@@ -373,6 +383,7 @@ async def send_movie_update(bot, base_name):
                 {"_id": base_name},
                 {"$set": {"message_id": msg.id, "is_photo": is_photo}}
             )
+            asyncio.create_task(auto_delete_update(bot, msg.id))
             return msg
         except FloodWait as e:
             wait_time = e.value + 2
@@ -522,6 +533,7 @@ def generate_movie_message(movie_doc, base_name):
         rating=movie_doc.get("rating", "N/A"),
         search_link=temp.B_LINK
     )
+
 
 
 
