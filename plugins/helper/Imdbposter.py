@@ -1,5 +1,5 @@
 import re
-import aiohttp
+import aiohttp, socket
 import warnings
 import logging
 from io import BytesIO
@@ -24,7 +24,8 @@ async def fetch_image(url, size=(860, 1200)):
         logger.info("Image fetching is disabled.")
         return None
     try:
-        async with aiohttp.ClientSession() as session:
+        connector = aiohttp.TCPConnector(family=socket.AF_INET)
+        async with aiohttp.ClientSession(connector=connector) as session:
             async with session.get(url) as response:
                 if response.status != 200:
                     logger.error(f"Failed to fetch image: {response.status}")
@@ -128,7 +129,8 @@ async def get_movie_detailsx(query, id=False, file=None):
     base_url = "https://bharath-boy-api.vercel.app/api/movie-posters"
     q = str(query).strip()
     try:
-        async with aiohttp.ClientSession() as session:
+        connector = aiohttp.TCPConnector(family=socket.AF_INET)
+        async with aiohttp.ClientSession(connector=connector) as session:
             params = {"query": q, "api_key": TMDB_API_KEY}
             async with session.get(base_url, params=params) as resp:
                 if resp.status != 200:
@@ -180,4 +182,3 @@ async def get_movie_detailsx(query, id=False, file=None):
             break
     details['backdrop_url'] = backdrop_url
     return details
-
