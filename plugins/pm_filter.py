@@ -698,9 +698,13 @@ async def cb_handler(client: Client, query: CallbackQuery):
         try:
             ident, kk, file_id = query.data.split("#")
             btn = []
-            chat = file_id.split("_")[0]
-            settings = await get_settings(chat)
-            fsub_channels = list(dict.fromkeys((settings.get('fsub', []) if settings else [])+ AUTH_CHANNELS)) 
+            # For miniapp requests, use global AUTH_CHANNELS only (no group-specific fsub)
+            if kk == "miniapp":
+                fsub_channels = list(dict.fromkeys(AUTH_CHANNELS))
+            else:
+                chat = file_id.split("_")[0]
+                settings = await get_settings(chat)
+                fsub_channels = list(dict.fromkeys((settings.get('fsub', []) if settings else [])+ AUTH_CHANNELS))
             btn += await is_subscribed(client, query.from_user.id, fsub_channels)
             btn += await is_req_subscribed(client, query.from_user.id, AUTH_REQ_CHANNELS)
             if btn:
@@ -716,8 +720,14 @@ async def cb_handler(client: Client, query: CallbackQuery):
                     show_alert=True
                 )
                 return
-            await query.answer(url=f"https://t.me/{temp.U_NAME}?start={kk}_{file_id}")
-            await query.message.delete()
+            # For miniapp: all channels joined — send file via our miniapp handler
+            if kk == "miniapp":
+                from plugins.miniapp_plugin import _send_file_with_checks
+                await query.message.delete()
+                await _send_file_with_checks(client, query.message, query.from_user.id, file_id)
+            else:
+                await query.answer(url=f"https://t.me/{temp.U_NAME}?start={kk}_{file_id}")
+                await query.message.delete()
         except Exception as e:
             await log_error(client, f"❌ Error in checksub callback:\n\n{repr(e)}")
             logger.error(f"❌ Error in checksub callback:\n\n{repr(e)}")
