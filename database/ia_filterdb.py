@@ -58,16 +58,20 @@ async def save_file(media):
     file_name = re.sub(r"@\w+|(_|\-|\.|\+)", " ", str(media.file_name))
     file_caption = re.sub(r"@\w+|(_|\-|\.|\+)", " ", str(media.caption))
     
+    # Auto-classify using TMDB metadata (async, best-effort)
+    category = await _classify_file(file_name, file_caption)
+    
     document = {
         '_id': file_id,
         'file_name': file_name,
         'file_size': media.file_size,
-        'caption': file_caption
+        'caption': file_caption,
+        'category': category,  # 'movie' | 'series' | 'anime'
     }
     
     try:
         collection.insert_one(document)
-        logger.info(f'Saved - {file_name}')
+        logger.info(f'Saved [{category}] - {file_name}')
         return 'suc'
     except DuplicateKeyError:
         logger.warning(f'Already Saved - {file_name}')
@@ -76,7 +80,7 @@ async def save_file(media):
         if SECOND_FILES_DATABASE_URL:
             try:
                 second_collection.insert_one(document)
-                logger.info(f'Saved to 2nd db - {file_name}')
+                logger.info(f'Saved to 2nd db [{category}] - {file_name}')
                 return 'suc'
             except DuplicateKeyError:
                 logger.warning(f'Already Saved in 2nd db - {file_name}')
@@ -84,6 +88,110 @@ async def save_file(media):
         else:
             logger.error(f'your FILES_DATABASE_URL is already full, add SECOND_FILES_DATABASE_URL')
             return 'err'
+
+
+async def _classify_file(file_name: str, caption: str) -> str:
+    """
+    Smart TMDB-based auto-classification.
+    Decision order:
+      1. Anime keywords in filename → 'anime'
+      2. TMDB genres contain Animation → 'anime' (covers animated movies too)
+      3. TMDB origin country JP or language 'ja' + TV → 'anime'
+      4. TMDB media_type = 'tv' → 'series'
+      5. S01E01 / Season pattern in filename → 'series'
+      6. Default → 'movie'
+    Results are best-effort; failures fall back to filename heuristics.
+    """
+    import re as _re
+    try:
+        # Step 1: explicit anime keywords in filename
+        _ANIME_KW = _re.compile(
+            r'\b(anime|hentai|ova|oad|ona|manhwa|manhua|donghua|'
+            r'shonen|seinen|shoujo|isekai|mecha|yaoi|yuri)\b|'
+            r'[\u3040-\u30FF\u4E00-\u9FFF]', _re.IGNORECASE)
+        text = f"{caption} {file_name}"
+        if _ANIME_KW.search(text):
+            return 'anime'
+
+        # Step 2: Extract clean title + year for TMDB query
+        _EXT2 = _re.compile(r'\.(mkv|mp4|avi|mov)$', _re.IGNORECASE)
+        _JUNK2 = _re.compile(
+            r'\b(480p|720p|1080p|2160p|4k|hdr|bluray|bdrip|web[\-\s]?dl|webrip|'
+            r'x264|x265|hevc|aac|ac3|dts|hindi|english|tamil|dubbed|subbed)\b.*',
+            _re.IGNORECASE)
+        _SE2 = _re.compile(r'\b[Ss](\d{1,2})[Ee](\d{1,2})\b')
+        _S2 = _re.compile(r'\b[Ss](\d{1,2})\b')
+        _YEAR2 = _re.compile(r'\b(19[5-9]\d|20[0-3]\d)\b')
+
+        raw = _EXT2.sub('', file_name)
+        raw = _re.sub(r'[@\[\]()\-_\+\.]+', ' ', raw)
+        # check S/E before cleaning
+        has_season = bool(_SE2.search(raw) or _S2.search(raw))
+        raw = _JUNK2.sub('', raw)
+        raw = _re.sub(r'\s{2,}', ' ', raw).strip()
+
+        year_m = _YEAR2.search(raw)
+        year = year_m.group(0) if year_m else ''
+        title = _YEAR2.sub('', raw).strip()
+        if not title:
+            return 'series' if has_season else 'movie'
+
+        # Step 3: TMDB lookup with caching (reuse module-level cache if available)
+        try:
+            from info import TMDB_API_KEY
+            import aiohttp, socket
+            if not TMDB_API_KEY:
+                raise ValueError("no key")
+            to = aiohttp.ClientTimeout(total=8, connect=4)
+            connector = aiohttp.TCPConnector(family=socket.AF_INET)
+            params = {'api_key': TMDB_API_KEY, 'query': title, 'page': 1}
+            if year:
+                params['year'] = year
+            async with aiohttp.ClientSession(connector=connector, timeout=to) as sess:
+                async with sess.get('https://api.themoviedb.org/3/search/multi', params=params) as r:
+                    if r.status != 200:
+                        raise ValueError(f"TMDB status {r.status}")
+                    data = await r.json()
+                results = [x for x in data.get('results', []) if x.get('media_type') != 'person']
+                if not results:
+                    return 'series' if has_season else 'movie'
+                item = results[0]
+                mt = item.get('media_type', 'movie')
+                iid = item.get('id')
+                # Fetch full details for genres, origin_country, original_language
+                async with sess.get(
+                    f'https://api.themoviedb.org/3/{mt}/{iid}',
+                    params={'api_key': TMDB_API_KEY}
+                ) as dr:
+                    detail = await dr.json() if dr.status == 200 else item
+
+            genres = [g['name'].lower() for g in detail.get('genres', [])]
+            origin_country = detail.get('origin_country', [])
+            original_language = detail.get('original_language', '')
+
+            # Animation genre → always anime (movies + TV)
+            if 'animation' in genres or 'anime' in genres:
+                return 'anime'
+
+            # Japanese origin TV show → anime
+            if mt == 'tv' and ('JP' in origin_country or original_language == 'ja'):
+                return 'anime'
+
+            # TV type → series
+            if mt == 'tv':
+                return 'series'
+
+            # Movie type → movie
+            return 'movie'
+
+        except Exception as tmdb_err:
+            logger.debug(f"TMDB classify error for '{title}': {tmdb_err}")
+            # Fallback to filename heuristics
+            return 'series' if has_season else 'movie'
+
+    except Exception as e:
+        logger.error(f"_classify_file error: {e}")
+        return 'movie'
 
 def clean_query(query, filter_words):
     if not query:
@@ -279,4 +387,3 @@ async def set_filter_words(words):
         )
     except Exception as e:
         logger.error(f"Error setting filter words: {e}")
-
