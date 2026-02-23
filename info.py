@@ -84,15 +84,15 @@ SUGGESTION_TIMEOUT = int(environ.get("SUGGESTION_TIMEOUT", "120"))  # seconds
 MAX_SUGGESTIONS = int(environ.get("MAX_SUGGESTIONS", "8"))
 MOVIE_UPDATE_NOTIFICATION = bool(environ.get('MOVIE_UPDATE_NOTIFICATION', True))  # Notification On (True) / Off (False)
 MOVIE_UPDATE_CHANNEL = int(environ.get('MOVIE_UPDATE_CHANNEL', '-1002333962739'))  # Notification of sent to your channel
-fetch_update_channels = environ.get("FETCH_MOVIE_UPDATE","-1002028282135 -1002856477031") # Movie Update Fetch Channels (use space for multiple channels)
+fetch_update_channels = environ.get("FETCH_MOVIE_UPDATE","-1002028282135") # Movie Update Fetch Channels (use space for multiple channels)
 FETCH_MOVIE_UPDATE = [int(ch) for ch in fetch_update_channels.split()if ch and id_pattern.match(ch)]
 CHANNELS = [int(ch) if id_pattern.search(ch) else ch for ch in environ.get('CHANNELS', '-1002066489726 -1002445793312 -1002407564854 -1002467109334').split()] # Auto Index Channel
 DELETE_CHANNELS = int(environ.get('DELETE_CHANNELS','-1002661660620')) # Channel to delete file from DB
 IMAGE_FETCH = bool(environ.get('IMAGE_FETCH', True))  # On (True) / Off (False)
 LINK_PREVIEW = bool(environ.get('LINK_PREVIEW', False)) # Shows link preview in notification msg instead of image
 ABOVE_PREVIEW = bool(environ.get('ABOVE_PREVIEW', True)) # Shows link preview above the text in notification msg if True else below the msg
-TMDB_API_KEY = environ.get('TMDB_API_KEY', '') # preffer to use your own tmdb API Key get it from https://www.themoviedb.org/settings/api
-TMDB_POSTER = bool(environ.get('TMDB_POSTER', False)) # Shows TMDB poster in notification msg
+TMDB_API_KEY = environ.get('TMDB_API_KEY', 'e166a67b9b21ee3bd84bc189d567057b') # preffer to use your own tmdb API Key get it from https://www.themoviedb.org/settings/api
+TMDB_POSTER = bool(environ.get('TMDB_POSTER', True)) # Shows TMDB poster in notification msg
 LANDSCAPE_POSTER = bool(environ.get('LANDSCAPE_POSTER', True)) # Shows landscape poster in notification msg
 
 # Bot Settings
@@ -119,8 +119,8 @@ QUALITIES = [ "240p", "360p", "480p", "540p", "720p", "960p", "1080p", "1440p"]
 SEASONS = [("sᴇᴀsᴏɴ 𝟷", "s01"), ("sᴇᴀsᴏɴ 𝟸", "s02"), ("sᴇᴀsᴏɴ 𝟹", "s03"), ("sᴇᴀsᴏɴ 𝟺", "s04"), ("sᴇᴀsᴏɴ 𝟻", "s05"), ("sᴇᴀsᴏɴ 𝟼", "s06"), ("sᴇᴀsᴏɴ 𝟽", "s07"), ("sᴇᴀsᴏɴ 𝟾", "s08"), ("sᴇᴀsᴏɴ 𝟿", "s09"), ("sᴇᴀsᴏɴ 𝟷𝟶", "s10")]
 
 # Stream Settings 
-
-IS_PREMIUM_STREAM = is_enabled('IS_PREMIUM_STREAM', True) # True To Allow Stream For Premium User Only
+MINI_APP_URL = "https://precious-mab-filetokensender-fdc78bed.koyeb.app/miniapp"
+IS_PREMIUM_STREAM = is_enabled('IS_PREMIUM_STREAM', False) # True To Allow Stream For Premium User Only
 BIN_CHANNEL = environ.get("BIN_CHANNEL", "-1002262450769") # Channel Where Files sent For stream
 if len(BIN_CHANNEL) == 0:
     print('Error BIN_CHANNEL is missing, exiting now')
