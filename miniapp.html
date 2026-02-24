@@ -278,6 +278,9 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
           <div class="empty-sub">Movies, Series, Shows...</div>
         </div>
       </div>
+      <div class="load-more-sentinel" id="searchSentinel">
+        <div class="load-more-spinner" id="searchSpinner"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -325,6 +328,12 @@ let seenTitles     = { movies: new Set(), series: new Set() };
 let tabState       = {
   movies: { files: [], page: 0, loading: false, hasMore: true, loaded: false },
   series: { files: [], page: 0, loading: false, hasMore: true, loaded: false },
+};
+// Search/chip pagination state
+let searchState = {
+  query: '', yearFilter: null, allResults: [], page: 0,
+  pageSize: 24, loading: false, hasMore: false,
+  seenTitles: new Set(),
 };
 
 window.addEventListener('load', async () => {
@@ -538,44 +547,104 @@ function setupInfiniteScroll() {
     }, { rootMargin: '300px' });
     obs.observe(document.getElementById(tab+'Sentinel'));
   });
+  // Search tab infinite scroll
+  const searchObs = new IntersectionObserver(entries => {
+    if (entries[0].isIntersecting && currentTab === 'search') loadMoreSearch();
+  }, { rootMargin: '300px' });
+  searchObs.observe(document.getElementById('searchSentinel'));
 }
 
 // ─── SEARCH ───────────────────────────────────────────────────────────────────
-// yearFilter: strict year match (e.g. "2026") — applied client-side as safety net
+// Chip/search results use same paginated infinite-scroll logic as browse tabs.
+// Backend returns all matching results fast (no poster pre-fetch).
+// Frontend enriches posters lazily card-by-card — identical to movies/series tabs.
+
 async function runSearch(query, displayLabel, yearFilter) {
+  // Reset search state for fresh query
+  searchState.query       = query;
+  searchState.yearFilter  = yearFilter || null;
+  searchState.allResults  = [];
+  searchState.page        = 0;
+  searchState.hasMore     = false;
+  searchState.loading     = false;
+  searchState.seenTitles  = new Set();
+
   const container = document.getElementById('searchResults');
   container.innerHTML = skeletonGrid(8);
 
   const yfParam = yearFilter ? '&year_filter=' + encodeURIComponent(yearFilter) : '';
-  let data = await apiFetch('/miniapp/search?q='+encodeURIComponent(query)+'&fuzzy=1'+yfParam);
+  const data = await apiFetch('/miniapp/search?q='+encodeURIComponent(query)+'&fuzzy=1'+yfParam);
 
-  // Client-side year filter as extra safety net
-  if (yearFilter && data && data.results) {
-    data.results = data.results.filter(r => !r.year || String(r.year) === String(yearFilter));
+  if (!data || !data.ok || !data.results || !data.results.length) {
+    const label = displayLabel || ('"' + query + '"');
+    container.innerHTML = emptyState('Nothing found', 'No results for ' + esc(label));
+    return;
   }
+
+  // Client-side year filter safety net
+  let results = data.results;
+  if (yearFilter) {
+    results = results.filter(r => !r.year || String(r.year) === String(yearFilter));
+  }
+
+  searchState.allResults = results;
+  searchState.hasMore    = results.length > searchState.pageSize;
 
   const label = displayLabel || ('"' + query + '"');
-  if (data && data.ok && data.results && data.results.length) {
-    const total = data.results.length;
-    container.innerHTML =
-      '<div style="font-family:\'Bebas Neue\',sans-serif;font-size:20px;letter-spacing:1px;color:var(--text);margin-bottom:10px">' +
-      'Results for ' + esc(label) +
-      ' <small style="font-size:12px;color:var(--muted);font-family:\'DM Sans\',sans-serif">' + total + ' found</small></div>';
-    const grid = document.createElement('div');
-    grid.className = 'grid';
-    container.appendChild(grid);
-    // Render ALL results — no artificial cap
-    renderGrid(grid, data.results, 'grid');
-    enrichCardsWithPosters(data.results);
-  } else {
-    container.innerHTML = emptyState('Nothing found','No results for ' + esc(label));
-  }
+  container.innerHTML =
+    '<div id="searchHeader" style="font-family:'Bebas Neue',sans-serif;font-size:20px;letter-spacing:1px;color:var(--text);margin-bottom:10px">' +
+    'Results for ' + esc(label) +
+    ' <small id="searchCount" style="font-size:12px;color:var(--muted);font-family:'DM Sans',sans-serif">' + results.length + ' found</small></div>';
+
+  const grid = document.createElement('div');
+  grid.className = 'grid';
+  grid.id = 'searchGrid';
+  container.appendChild(grid);
+
+  // Render first page
+  _renderSearchPage(grid);
+}
+
+function _renderSearchPage(grid) {
+  const st = searchState;
+  if (st.loading) return;
+  const start = st.page * st.pageSize;
+  const slice = st.allResults.slice(start, start + st.pageSize);
+  if (!slice.length) { st.hasMore = false; return; }
+
+  // Deduplicate
+  const unique = slice.filter(item => {
+    const key = (item.group_title || item.name || '').toLowerCase().trim();
+    if (!key || st.seenTitles.has(key)) return false;
+    st.seenTitles.add(key); return true;
+  });
+
+  unique.forEach(item => grid.appendChild(buildCard(item)));
+  st.page++;
+  st.hasMore = (st.page * st.pageSize) < st.allResults.length;
+
+  // Enrich posters for this page — same logic as browse tabs
+  enrichCardsWithPosters(unique);
+}
+
+async function loadMoreSearch() {
+  const st = searchState;
+  if (st.loading || !st.hasMore) return;
+  st.loading = true;
+  document.getElementById('searchSpinner').classList.add('visible');
+
+  const grid = document.getElementById('searchGrid');
+  if (grid) _renderSearchPage(grid);
+
+  document.getElementById('searchSpinner').classList.remove('visible');
+  st.loading = false;
 }
 
 async function doSearch(q) {
   if (!q) {
     document.getElementById('searchResults').innerHTML =
       '<div class="empty-state"><div class="empty-title">Search for anything</div><div class="empty-sub">Movies, Series, Shows...</div></div>';
+    searchState.hasMore = false;
     return;
   }
   await runSearch(q, null, null);
@@ -790,14 +859,25 @@ function requestFile(btn) {
   const fileId = btn.getAttribute('data-file-id');
   if (!fileId) return;
   tg.HapticFeedback.impactOccurred('medium');
-  // Send file to user's bot DM via the API
+
+  // Disable button to prevent double-tap
+  btn.style.opacity = '0.6';
+  btn.style.pointerEvents = 'none';
+
+  // Fire the send request to the server (fire-and-forget)
   fetch(API_BASE + '/miniapp/send_file', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ file_id: fileId, initData: tg.initData || '' }),
-  }).catch(()=>{});
-  // Close miniapp so user is taken back to bot DM to receive the file
-  setTimeout(() => { tg.close(); }, 300);
+  }).catch(() => {});
+
+  // Open the bot in Telegram — this navigates the user to the bot chat
+  // where they will receive the file. Then close the miniapp.
+  try {
+    tg.openTelegramLink('https://t.me/' + BOT_USERNAME);
+  } catch(e) {}
+  // tg.close() is called after a tiny delay so the link opens first
+  setTimeout(() => { try { tg.close(); } catch(e) {} }, 400);
 }
 
 function switchSeason(sNum, tabEl) {
