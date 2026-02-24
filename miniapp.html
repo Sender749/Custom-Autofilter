@@ -312,16 +312,6 @@ let searchState = {
 };
 
 // ── Init ─────────────────────────────────────────────────────────────────────
-// Client-side Fisher-Yates shuffle — ensures every open/refresh shows a different order
-// even when the server deck cache hasn't expired yet
-function clientShuffle(arr) {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
-}
-
 window.addEventListener("load", async () => {
   setupInfiniteScroll();
   const loaderTO = setTimeout(hideLoader, 7000); // force-hide after 7s max
@@ -368,9 +358,11 @@ async function loadTab(tab, reset) {
 
   let data = null;
   try {
-    // Always send ts on page=0 (first load or refresh) — forces server to rebuild+reshuffle the deck
-    // This means every miniapp open AND every refresh gets a fresh shuffle from the server
-    const ts = (st.page === 0) ? ("&ts=" + Date.now()) : "";
+    // Send ts ONLY on explicit refresh (reset=true) — this tells the server to rebuild
+    // the deck fresh from DB with a new shuffle. On normal first-open we use the
+    // existing cached deck (already enriched with posters server-side) to avoid
+    // hammering TMDB on every miniapp open.
+    const ts = reset ? ("&ts=" + Date.now()) : "";
     data = await apiFetch("/miniapp/browse?type=" + tab + "&page=" + st.page + "&limit=24" + ts);
   } catch(e) { data = null; }
 
@@ -378,14 +370,14 @@ async function loadTab(tab, reset) {
   grid.innerHTML = "";
 
   if (data && data.ok && data.results && data.results.length) {
-    // Client-side shuffle on top of server shuffle — guarantees a unique order every open
-    const results = clientShuffle(data.results.slice());
+    const results = data.results;
     st.hasMore = data.has_more !== false;
     st.loaded  = true;
     st.totalSeen += results.length;
     renderGrid(grid, results, viewModes[tab]);
     updateCount(tab, data.total || st.totalSeen, st.hasMore);
-    enrichCardsWithPosters(results);
+    // Server now enriches posters; fallback enrichment only for cards still missing posters
+    enrichCardsWithPosters(results.filter(r => !r.poster));
   } else if (data && data.ok) {
     st.hasMore = false; st.loaded = true;
     grid.innerHTML = emptyState("Nothing here yet", "Files will appear as they are added");
@@ -419,7 +411,8 @@ async function loadMoreTab(tab) {
     data.results.forEach(item => grid.appendChild(
       viewModes[tab] === "list" ? buildListCard(item) : buildCard(item)
     ));
-    enrichCardsWithPosters(data.results);
+    // Only fallback-enrich cards the server couldn't poster-enrich yet
+    enrichCardsWithPosters(data.results.filter(r => !r.poster));
     st.hasMore = data.has_more !== false;
     updateCount(tab, data.total || st.totalSeen, st.hasMore);
   } else {
@@ -433,11 +426,12 @@ async function refreshTab(tab) {
   const btn = document.getElementById(tab + "RefreshBtn");
   btn.classList.add("spinning");
   tg.HapticFeedback.impactOccurred("light");
-  // Reset tab state fully — backend will reshuffle because we send ts param
+  // Full reset — sends ts param so server rebuilds + reshuffles the deck from DB
+  // and re-runs poster enrichment so new/recently-added titles get posters too
   tabState[tab] = { page: 0, loading: false, hasMore: true, loaded: false, totalSeen: 0 };
   await loadTab(tab, true);
   btn.classList.remove("spinning");
-  showToast("Refreshed with new mix!");
+  showToast("Refreshed!");
 }
 
 function setupInfiniteScroll() {
