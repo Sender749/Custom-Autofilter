@@ -338,9 +338,16 @@ let searchState = {
 
 window.addEventListener('load', async () => {
   buildChips();
-  await loadTab('movies');
-  hideLoader();
   setupInfiniteScroll();
+  // Hide loader after max 5s no matter what (prevents stuck loading screen)
+  const loaderTimeout = setTimeout(() => hideLoader(), 5000);
+  try {
+    await loadTab('movies');
+  } catch(e) {
+    console.error('loadTab error:', e);
+  }
+  clearTimeout(loaderTimeout);
+  hideLoader();
 });
 
 function hideLoader() {
@@ -352,7 +359,7 @@ function hideLoader() {
 async function apiFetch(path) {
   try {
     const ctrl = new AbortController();
-    const tid  = setTimeout(() => ctrl.abort(), 18000);
+    const tid  = setTimeout(() => ctrl.abort(), 8000);
     const r    = await fetch(API_BASE + path, {
       headers: {'X-Telegram-Init-Data': tg.initData || ''},
       signal: ctrl.signal,
@@ -473,7 +480,10 @@ async function loadTab(tab, reset) {
 
   const ts = reset ? ('&ts=' + Date.now()) : '';
   st.loading = true;
-  const data = await apiFetch('/miniapp/browse?type='+tab+'&page='+st.page+'&limit=24'+ts);
+  let data = null;
+  try {
+    data = await apiFetch('/miniapp/browse?type='+tab+'&page='+st.page+'&limit=24'+ts);
+  } catch(e) { data = null; }
   st.loading = false;
   grid.innerHTML = '';
 
