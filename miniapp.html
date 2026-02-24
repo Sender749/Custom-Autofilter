@@ -154,7 +154,6 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
 .info-item{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:9px 10px}
 .info-item .label{font-size:9px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);margin-bottom:3px}
 .info-item .value{font-size:12px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.info-item.full{grid-column:1/-1}
 .files-section{margin-top:4px}
 .season-tabs{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;margin-bottom:12px;padding-bottom:2px}
 .season-tabs::-webkit-scrollbar{display:none}
@@ -300,70 +299,62 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
 const API_BASE     = "https://precious-mab-filetokensender-fdc78bed.koyeb.app";
 const BOT_USERNAME = "Navex_MoviesHub_Bot";
 
-// ─── QUICK CHIPS CONFIG ──────────────────────────────────────────────────────
-// label      : text shown on the chip button
-// query      : search term sent to backend (filterWords are stripped from this)
-// filterWords: display-only words to remove before searching
-// yearFilter : if set, ONLY show results matching this exact year
+// ── Quick chips: query = exact word to search in DB ──────────────────────────
 const QUICK_CHIPS = [
-  { label: "Latest 2026",    query: "2026",    filterWords: ["Latest"],    yearFilter: "2026" },
-  { label: "Bollywood",      query: "hindi",   filterWords: ["bollywood"], yearFilter: null   },
-  { label: "Hollywood",      query: "english", filterWords: ["hollywood"], yearFilter: null   },
-  { label: "Punjabi Movies", query: "punjabi", filterWords: ["Movies"],    yearFilter: null   },
-  { label: "Adult Movies",   query: "adult",   filterWords: ["Movies"],    yearFilter: null   },
-  { label: "Hentais",        query: "hentais", filterWords: [],            yearFilter: null   },
+  { label: "Latest 2026", query: "2026",    yearFilter: "2026" },
+  { label: "Bollywood",   query: "hindi",   yearFilter: null   },
+  { label: "Hollywood",   query: "english", yearFilter: null   },
+  { label: "Punjabi",     query: "punjabi", yearFilter: null   },
+  { label: "Adult",       query: "adult",   yearFilter: null   },
+  { label: "Hentai",      query: "hentai",  yearFilter: null   },
 ];
 
 const tg = window.Telegram.WebApp;
 tg.ready();
 tg.expand();
 
-let currentTab     = 'movies';
-let viewModes      = { movies: 'grid', series: 'grid' };
+let currentTab     = "movies";
+let viewModes      = { movies: "grid", series: "grid" };
 let searchDebounce = null;
 let activeChip     = null;
-let preChipTab     = 'movies';
-// Per-tab deduplication sets (prevent repeated posters on scroll)
-let seenTitles     = { movies: new Set(), series: new Set() };
-let tabState       = {
-  movies: { files: [], page: 0, loading: false, hasMore: true, loaded: false },
-  series: { files: [], page: 0, loading: false, hasMore: true, loaded: false },
-};
-// Search/chip pagination state
-let searchState = {
-  query: '', yearFilter: null, allResults: [], page: 0,
-  pageSize: 24, loading: false, hasMore: false,
-  seenTitles: new Set(),
+let preChipTab     = "movies";
+
+// Tab state — page counter only, backend handles dedup via shuffled deck
+let tabState = {
+  movies: { page: 0, loading: false, hasMore: true, loaded: false, totalSeen: 0 },
+  series: { page: 0, loading: false, hasMore: true, loaded: false, totalSeen: 0 },
 };
 
-window.addEventListener('load', async () => {
+// Search pagination state
+let searchState = {
+  allResults: [], page: 0, pageSize: 24,
+  loading: false, hasMore: false,
+};
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+window.addEventListener("load", async () => {
   buildChips();
   setupInfiniteScroll();
-  // Guaranteed loader hide after 6s no matter what
-  const loaderTimeout = setTimeout(() => hideLoader(), 6000);
-  try {
-    await loadTab('movies');
-  } catch(e) {
-    console.error('loadTab error:', e);
-  }
-  clearTimeout(loaderTimeout);
+  const loaderTO = setTimeout(hideLoader, 7000); // force-hide after 7s max
+  try { await loadTab("movies"); } catch(e) { console.error("loadTab error:", e); }
+  clearTimeout(loaderTO);
   hideLoader();
 });
 
 function hideLoader() {
-  const l = document.getElementById('loader');
-  if (!l) return;
-  if (l.classList.contains('hidden')) return;
-  l.classList.add('hidden');
+  const l = document.getElementById("loader");
+  if (!l || l.classList.contains("hidden")) return;
+  l.classList.add("hidden");
   setTimeout(() => { try { l.remove(); } catch(e){} }, 500);
 }
 
+// ── API ───────────────────────────────────────────────────────────────────────
 async function apiFetch(path) {
   try {
     const ctrl = new AbortController();
-    const tid  = setTimeout(() => ctrl.abort(), 8000);
+    const tid  = setTimeout(() => ctrl.abort(), 10000);
     const r    = await fetch(API_BASE + path, {
-      headers: {'X-Telegram-Init-Data': tg.initData || ''},
+      headers: { "X-Telegram-Init-Data": tg.initData || "" },
       signal: ctrl.signal,
     });
     clearTimeout(tid);
@@ -372,579 +363,512 @@ async function apiFetch(path) {
   } catch(e) { return null; }
 }
 
-// ─── SMART FILENAME CLEANER ──────────────────────────────────────────────────
-// Strips emojis, channel watermarks, upload tags, junk words before TMDB lookup
-function smartCleanTitle(raw) {
-  let s = String(raw || '');
-  // Remove all emoji/symbol unicode ranges
-  s = s.replace(/[\u{1F300}-\u{1FFFF}]/gu, ' ');
-  s = s.replace(/[\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, ' ');
-  // Remove @handles
-  s = s.replace(/@\w+/g, ' ');
-  // Remove common watermark / channel / upload site words
-  const junkWords = [
-    'movies4u','movie4u','moviesflix','moviesflixpro','filmywap','filmyzilla',
-    'skymovies','skymovieshd','moviesbaba','khatrimaza','9xmovies','worldfree4u',
-    'downloadhub','hubcloud','gdrive','googledrive','tg','telegram','channel',
-    'group','admin','bot','upload','uploaded','by','from',
-    'hdhub4u','cinemagor','cinemago','bolly4u','bollyflix','bolly',
-    'mkvcage','mkvking','mkvcinemas','1tamilmv','tamilrockers','tamilblasters',
-    'movierulz','ibomma','jiorockers','sdmoviespoint','coolmoviez','yts','yify',
-    'rarbg','eztv','torrent','scene','navex','siliconbotz','silicon','botz',
-    'navexbot','freemoviedownload',
-  ];
-  const junkRe = new RegExp('\\b(' + junkWords.map(w=>w.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|') + ')\\b','gi');
-  s = s.replace(junkRe, ' ');
-  // Remove bracketed content unless it's a 4-digit year
-  s = s.replace(/\[([^\]]*)\]/g, (m,i) => /\b(19|20)\d{2}\b/.test(i) ? m : ' ');
-  s = s.replace(/\(([^)]*)\)/g,  (m,i) => /\b(19|20)\d{2}\b/.test(i) ? m : ' ');
-  // Strip extension
-  s = s.replace(/\.(mkv|mp4|avi|mov|flv|wmv|webm|ts|m4v)$/i, '');
-  // Strip quality/codec/print/lang junk (and everything after it)
-  s = s.replace(/\b(480p|720p|1080p|2160p|4k|uhd|hdr10?\+?|hdrip|bluray|bdrip|remux|web[\-\s]?dl|webrip|webdl|hdtv|dvdrip|dvdscr|dvd|cam|telesync|ts|x264|x265|hevc|avc|aac|ac3|mp3|dts|ddp|atmos|eac3|proper|repack|extended|unrated|theatrical|retail|limited|internal|sample|trailer|esub|hardsub|subbed|dual[\s.]?audio|multi[\s.]?audio|dubbed)\b.*/i,'');
-  s = s.replace(/\b(hindi|english|tamil|telugu|kannada|malayalam|bengali|punjabi|hin|eng|tam|tel|kan|mal|ben|pun)\b.*/i,'');
-  // Strip episode notation
-  s = s.replace(/\b[Ss]\d{1,2}[Ee]\d{1,2}\b.*/g,'');
-  s = s.replace(/\bSeason\s*\d+\b.*/gi,'');
-  // Clean separators
-  s = s.replace(/[_.\-]+/g,' ');
-  s = s.replace(/\s{2,}/g,' ').trim();
-  return s;
-}
-
-// ─── CHIPS ────────────────────────────────────────────────────────────────────
+// ── Chips ─────────────────────────────────────────────────────────────────────
 function buildChips() {
-  const wrap = document.getElementById('chipsWrap');
+  const wrap = document.getElementById("chipsWrap");
   QUICK_CHIPS.forEach(chip => {
-    const el = document.createElement('div');
-    el.className = 'chip';
+    const el = document.createElement("div");
+    el.className = "chip";
     el.textContent = chip.label;
-    el.dataset.label = chip.label;
     el.onclick = () => toggleChip(chip, el);
     wrap.appendChild(el);
   });
 }
 
-function applyFilterWords(query, filterWords) {
-  let q = query;
-  for (const fw of (filterWords || [])) {
-    q = q.replace(new RegExp('\\b' + fw.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '\\b','gi'),'');
-  }
-  return q.replace(/\s{2,}/g,' ').trim();
-}
-
 async function toggleChip(chip, el) {
   if (activeChip === chip.label) {
-    activeChip = null; el.classList.remove('active');
-    document.getElementById('searchInput').value = '';
-    document.getElementById('clearBtn').style.display = 'none';
-    tg.HapticFeedback.selectionChanged();
-    document.getElementById('searchTab').style.display = 'none';
+    // Deactivate
+    activeChip = null;
+    el.classList.remove("active");
+    document.getElementById("searchInput").value = "";
+    document.getElementById("clearBtn").style.display = "none";
+    document.getElementById("searchTab").style.display = "none";
     switchTab(preChipTab, document.querySelector('[data-tab="' + preChipTab + '"]'));
     return;
   }
-  document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
-  el.classList.add('active'); activeChip = chip.label;
-  preChipTab = currentTab !== 'search' ? currentTab : preChipTab;
-  tg.HapticFeedback.impactOccurred('light');
+  document.querySelectorAll(".chip").forEach(c => c.classList.remove("active"));
+  el.classList.add("active");
+  activeChip = chip.label;
+  preChipTab = currentTab !== "search" ? currentTab : preChipTab;
+  tg.HapticFeedback.impactOccurred("light");
 
-  const q = applyFilterWords(chip.query, chip.filterWords);
-  if (!q) { showToast('Empty query'); activeChip=null; el.classList.remove('active'); return; }
+  document.getElementById("searchInput").value = chip.label;
+  document.getElementById("clearBtn").style.display = "block";
 
-  document.getElementById('searchInput').value = chip.label;
-  document.getElementById('clearBtn').style.display = 'block';
-  await runSearch(q, '"' + chip.label + '"', chip.yearFilter || null);
+  // Run search with the raw query word — backend searches ALL DB files containing this word
+  await runSearch(chip.query, '"' + chip.label + '"', chip.yearFilter || null);
   showSearchTab();
 }
 
-function showSearchTab() {
-  const st = document.getElementById('searchTab');
-  st.style.display = '';
-  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
-  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
-  st.classList.add('active');
-  document.getElementById('screen-search').classList.add('active');
-  currentTab = 'search';
-}
-
-// ─── TAB LOADING ──────────────────────────────────────────────────────────────
+// ── Tab loading ───────────────────────────────────────────────────────────────
 async function loadTab(tab, reset) {
   const st = tabState[tab];
   if (!reset && st.loaded) return;
   if (st.loading) return;
-  const grid = document.getElementById(tab+'Grid');
 
+  const grid = document.getElementById(tab + "Grid");
   if (reset) {
-    st.files=[]; st.page=0; st.hasMore=true; st.loaded=false;
-    seenTitles[tab] = new Set();
+    st.page = 0; st.hasMore = true; st.loaded = false; st.totalSeen = 0;
+    grid.innerHTML = "";
   }
   grid.innerHTML = skeletonGrid(12);
-
-  const ts = reset ? ('&ts=' + Date.now()) : '';
   st.loading = true;
+
   let data = null;
   try {
-    data = await apiFetch('/miniapp/browse?type='+tab+'&page='+st.page+'&limit=24'+ts);
+    // ts param on page 0 = force server to reshuffle the deck
+    const ts = (reset || st.page === 0) ? ("&ts=" + Date.now()) : "";
+    data = await apiFetch("/miniapp/browse?type=" + tab + "&page=" + st.page + "&limit=24" + ts);
   } catch(e) { data = null; }
+
   st.loading = false;
-  grid.innerHTML = '';
+  grid.innerHTML = "";
 
   if (data && data.ok && data.results && data.results.length) {
-    const unique = deduplicateResults(data.results, tab);
-    st.files = unique; st.hasMore = data.has_more !== false; st.loaded = true;
-    renderGrid(grid, unique, viewModes[tab]);
-    updateCount(tab);
-    enrichCardsWithPosters(unique);
+    st.hasMore = data.has_more !== false;
+    st.loaded  = true;
+    st.totalSeen += data.results.length;
+    renderGrid(grid, data.results, viewModes[tab]);
+    updateCount(tab, data.total || st.totalSeen, st.hasMore);
+    enrichCardsWithPosters(data.results);
   } else if (data && data.ok) {
-    st.hasMore=false; st.loaded=true;
-    grid.innerHTML = emptyState('Nothing here yet','Files will appear as they are added');
+    st.hasMore = false; st.loaded = true;
+    grid.innerHTML = emptyState("Nothing here yet", "Files will appear as they are added");
   } else {
-    st.hasMore=false;
-    const msg = (data&&data.error) ? data.error : 'Could not connect to server';
-    grid.innerHTML = emptyState('Could not load',msg) +
-      '<div style="text-align:center;margin-top:16px"><button onclick="refreshTab(\''+tab+'\')" style="background:var(--accent);color:#fff;border:none;padding:10px 24px;border-radius:8px;font-size:14px;cursor:pointer">&#8635; Retry</button></div>';
+    st.hasMore = false;
+    const msg = (data && data.error) ? data.error : "Could not connect to server";
+    grid.innerHTML = emptyState("Could not load", msg) +
+      '<div style="text-align:center;margin-top:16px"><button onclick="refreshTab(\'' + tab + '\')" style="background:var(--accent);color:#fff;border:none;padding:10px 24px;border-radius:8px;font-size:14px;cursor:pointer">&#8635; Retry</button></div>';
   }
 }
 
-function deduplicateResults(results, tab) {
-  const seen = seenTitles[tab];
-  return results.filter(item => {
-    const key = (item.group_title||item.name||'').toLowerCase().trim();
-    if (!key || seen.has(key)) return false;
-    seen.add(key); return true;
-  });
-}
-
-function updateCount(tab) {
-  const st = tabState[tab];
-  document.getElementById('dbCount').textContent = seenTitles[tab].size + (st.hasMore?'+':'') + ' titles';
+function updateCount(tab, total, hasMore) {
+  document.getElementById("dbCount").textContent =
+    (total || tabState[tab].totalSeen) + (hasMore ? "+" : "") + " titles";
 }
 
 async function loadMoreTab(tab) {
   const st = tabState[tab];
   if (st.loading || !st.hasMore) return;
   st.loading = true;
-  const spinner = document.getElementById(tab+'Spinner');
-  spinner.classList.add('visible');
+  const spinner = document.getElementById(tab + "Spinner");
+  spinner.classList.add("visible");
   st.page++;
-  const data = await apiFetch('/miniapp/browse?type='+tab+'&page='+st.page+'&limit=24');
+  let data = null;
+  try {
+    data = await apiFetch("/miniapp/browse?type=" + tab + "&page=" + st.page + "&limit=24");
+  } catch(e) {}
   if (data && data.ok && data.results && data.results.length) {
-    const grid = document.getElementById(tab+'Grid');
-    const unique = deduplicateResults(data.results, tab);
-    if (unique.length > 0) {
-      st.files = [...st.files, ...unique];
-      unique.forEach(item => grid.appendChild(viewModes[tab]==='list' ? buildListCard(item) : buildCard(item)));
-      enrichCardsWithPosters(unique);
-    }
+    const grid = document.getElementById(tab + "Grid");
+    st.totalSeen += data.results.length;
+    data.results.forEach(item => grid.appendChild(
+      viewModes[tab] === "list" ? buildListCard(item) : buildCard(item)
+    ));
+    enrichCardsWithPosters(data.results);
     st.hasMore = data.has_more !== false;
-    updateCount(tab);
-  } else { st.hasMore = false; }
-  spinner.classList.remove('visible');
+    updateCount(tab, data.total || st.totalSeen, st.hasMore);
+  } else {
+    st.hasMore = false;
+  }
+  spinner.classList.remove("visible");
   st.loading = false;
 }
 
 async function refreshTab(tab) {
-  const btn = document.getElementById(tab+'RefreshBtn');
-  btn.classList.add('spinning');
-  tg.HapticFeedback.impactOccurred('light');
+  const btn = document.getElementById(tab + "RefreshBtn");
+  btn.classList.add("spinning");
+  tg.HapticFeedback.impactOccurred("light");
+  // Reset tab state fully — backend will reshuffle because we send ts param
+  tabState[tab] = { page: 0, loading: false, hasMore: true, loaded: false, totalSeen: 0 };
   await loadTab(tab, true);
-  btn.classList.remove('spinning');
-  showToast('Refreshed!');
+  btn.classList.remove("spinning");
+  showToast("Refreshed with new mix!");
 }
 
 function setupInfiniteScroll() {
-  ['movies','series'].forEach(tab => {
+  ["movies", "series"].forEach(tab => {
     const obs = new IntersectionObserver(entries => {
       if (entries[0].isIntersecting && currentTab === tab) loadMoreTab(tab);
-    }, { rootMargin: '300px' });
-    obs.observe(document.getElementById(tab+'Sentinel'));
+    }, { rootMargin: "300px" });
+    obs.observe(document.getElementById(tab + "Sentinel"));
   });
-  // Search tab infinite scroll
   const searchObs = new IntersectionObserver(entries => {
-    if (entries[0].isIntersecting && currentTab === 'search') loadMoreSearch();
-  }, { rootMargin: '300px' });
-  searchObs.observe(document.getElementById('searchSentinel'));
+    if (entries[0].isIntersecting && currentTab === "search") loadMoreSearch();
+  }, { rootMargin: "300px" });
+  searchObs.observe(document.getElementById("searchSentinel"));
 }
 
-// ─── SEARCH ───────────────────────────────────────────────────────────────────
-// Chip/search results use same paginated infinite-scroll logic as browse tabs.
-// Backend returns all matching results fast (no poster pre-fetch).
-// Frontend enriches posters lazily card-by-card — identical to movies/series tabs.
-
+// ── Search ────────────────────────────────────────────────────────────────────
 async function runSearch(query, displayLabel, yearFilter) {
-  // Reset search state for fresh query
-  searchState.query       = query;
-  searchState.yearFilter  = yearFilter || null;
-  searchState.allResults  = [];
-  searchState.page        = 0;
-  searchState.hasMore     = false;
-  searchState.loading     = false;
-  searchState.seenTitles  = new Set();
+  searchState = { allResults: [], page: 0, pageSize: 24, loading: false, hasMore: false };
 
-  const container = document.getElementById('searchResults');
+  const container = document.getElementById("searchResults");
   container.innerHTML = skeletonGrid(8);
 
-  const yfParam = yearFilter ? '&year_filter=' + encodeURIComponent(yearFilter) : '';
-  const data = await apiFetch('/miniapp/search?q='+encodeURIComponent(query)+'&fuzzy=1'+yfParam);
+  const yfParam = yearFilter ? ("&year_filter=" + encodeURIComponent(yearFilter)) : "";
+  const data = await apiFetch("/miniapp/search?q=" + encodeURIComponent(query) + yfParam);
 
   if (!data || !data.ok || !data.results || !data.results.length) {
-    const label = displayLabel || ('"' + query + '"');
-    container.innerHTML = emptyState('Nothing found', 'No results for ' + esc(label));
+    container.innerHTML = emptyState("Nothing found", "No results for " + esc(displayLabel || query));
     return;
   }
 
-  // Client-side year filter safety net
-  let results = data.results;
-  if (yearFilter) {
-    results = results.filter(r => !r.year || String(r.year) === String(yearFilter));
-  }
-
-  searchState.allResults = results;
-  searchState.hasMore    = results.length > searchState.pageSize;
+  searchState.allResults = data.results;
+  searchState.hasMore    = data.results.length > searchState.pageSize;
 
   const label = displayLabel || ('"' + query + '"');
   container.innerHTML =
-    "<div id='searchHeader' style='font-family:Bebas Neue,sans-serif;font-size:20px;letter-spacing:1px;color:var(--text);margin-bottom:10px'>" +
+    "<div style=\"font-family:'Bebas Neue',sans-serif;font-size:20px;letter-spacing:1px;color:var(--text);margin-bottom:10px\">" +
     "Results for " + esc(label) +
-    " <small id='searchCount' style='font-size:12px;color:var(--muted);font-family:DM Sans,sans-serif'>" + results.length + " found</small></div>";
+    " <small style=\"font-size:12px;color:var(--muted);font-family:'DM Sans',sans-serif\">" + data.results.length + " found</small></div>";
 
-  const grid = document.createElement('div');
-  grid.className = 'grid';
-  grid.id = 'searchGrid';
+  const grid = document.createElement("div");
+  grid.className = "grid";
+  grid.id = "searchGrid";
   container.appendChild(grid);
-
-  // Render first page
-  _renderSearchPage(grid);
+  renderSearchPage(grid);
 }
 
-function _renderSearchPage(grid) {
+function renderSearchPage(grid) {
   const st = searchState;
-  if (st.loading) return;
   const start = st.page * st.pageSize;
   const slice = st.allResults.slice(start, start + st.pageSize);
   if (!slice.length) { st.hasMore = false; return; }
-
-  // Deduplicate
-  const unique = slice.filter(item => {
-    const key = (item.group_title || item.name || '').toLowerCase().trim();
-    if (!key || st.seenTitles.has(key)) return false;
-    st.seenTitles.add(key); return true;
-  });
-
-  unique.forEach(item => grid.appendChild(buildCard(item)));
+  slice.forEach(item => grid.appendChild(buildCard(item)));
   st.page++;
   st.hasMore = (st.page * st.pageSize) < st.allResults.length;
-
-  // Enrich posters for this page — same logic as browse tabs
-  enrichCardsWithPosters(unique);
+  enrichCardsWithPosters(slice);
 }
 
 async function loadMoreSearch() {
-  const st = searchState;
-  if (st.loading || !st.hasMore) return;
-  st.loading = true;
-  document.getElementById('searchSpinner').classList.add('visible');
-
-  const grid = document.getElementById('searchGrid');
-  if (grid) _renderSearchPage(grid);
-
-  document.getElementById('searchSpinner').classList.remove('visible');
-  st.loading = false;
+  if (searchState.loading || !searchState.hasMore) return;
+  searchState.loading = true;
+  document.getElementById("searchSpinner").classList.add("visible");
+  const grid = document.getElementById("searchGrid");
+  if (grid) renderSearchPage(grid);
+  document.getElementById("searchSpinner").classList.remove("visible");
+  searchState.loading = false;
 }
 
 async function doSearch(q) {
   if (!q) {
-    document.getElementById('searchResults').innerHTML =
-      '<div class="empty-state"><div class="empty-title">Search for anything</div><div class="empty-sub">Movies, Series, Shows...</div></div>';
+    document.getElementById("searchResults").innerHTML =
+      "<div class=\"empty-state\"><div class=\"empty-title\">Search for anything</div><div class=\"empty-sub\">Movies, Series, Shows...</div></div>";
     searchState.hasMore = false;
     return;
   }
   await runSearch(q, null, null);
 }
 
-// ─── POSTER ENRICHMENT ────────────────────────────────────────────────────────
+function showSearchTab() {
+  const st = document.getElementById("searchTab");
+  st.style.display = "";
+  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+  document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+  st.classList.add("active");
+  document.getElementById("screen-search").classList.add("active");
+  currentTab = "search";
+}
+
+// ── Poster enrichment (lazy, card-by-card) ────────────────────────────────────
+// Cleans filename before TMDB lookup to remove watermarks/junk
+function smartCleanTitle(raw) {
+  let s = String(raw || "");
+  s = s.replace(/[\u{1F300}-\u{1FFFF}]/gu, " ");
+  s = s.replace(/[\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, " ");
+  s = s.replace(/@\w+/g, " ");
+  const junk = ["movies4u","movie4u","moviesflix","filmywap","filmyzilla","skymovies","skymovieshd",
+    "khatrimaza","9xmovies","worldfree4u","downloadhub","hubcloud","gdrive","googledrive",
+    "tg","telegram","channel","group","admin","bot","upload","uploaded","by","from",
+    "hdhub4u","cinemagor","bolly4u","bollyflix","bolly","mkvcage","mkvking","mkvcinemas",
+    "movierulz","ibomma","jiorockers","sdmoviespoint","coolmoviez","yts","yify","rarbg","eztv",
+    "torrent","scene","navex","siliconbotz","silicon","botz","navexbot"];
+  const junkRe = new RegExp("\\b(" + junk.map(w => w.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join("|") + ")\\b","gi");
+  s = s.replace(junkRe, " ");
+  s = s.replace(/\[([^\]]*)\]/g, (m,i) => /\b(19|20)\d{2}\b/.test(i) ? m : " ");
+  s = s.replace(/\(([^)]*)\)/g,  (m,i) => /\b(19|20)\d{2}\b/.test(i) ? m : " ");
+  s = s.replace(/\.(mkv|mp4|avi|mov|flv|wmv|webm|ts|m4v)$/i, "");
+  s = s.replace(/\b(480p|720p|1080p|2160p|4k|uhd|hdr|bluray|bdrip|remux|web[\-\s]?dl|webrip|hdtv|dvdrip|x264|x265|hevc|avc|aac|ac3|mp3|dts|ddp|atmos|esub|hardsub|subbed|dual[\s.]?audio|multi[\s.]?audio|dubbed)\b.*/i,"");
+  s = s.replace(/\b(hindi|english|tamil|telugu|kannada|malayalam|bengali|punjabi)\b.*/i,"");
+  s = s.replace(/\b[Ss]\d{1,2}[Ee]\d{1,2}\b.*/g,"");
+  s = s.replace(/\bSeason\s*\d+\b.*/gi,"");
+  s = s.replace(/[_.\-]+/g," ").replace(/\s{2,}/g," ").trim();
+  return s;
+}
+
 async function enrichCardsWithPosters(items) {
   for (const item of items) {
-    if (item.poster) continue;
+    if (item.poster) {
+      // Already has poster — just make sure card shows it
+      _applyPosterToCard(item);
+      continue;
+    }
     try {
-      const cleanedTitle = smartCleanTitle(item.group_title || item.name || '');
+      const cleanedTitle = smartCleanTitle(item.group_title || item.name || "");
       if (!cleanedTitle) continue;
-
-      const r = await apiFetch('/miniapp/poster?title='+encodeURIComponent(cleanedTitle)+'&year='+encodeURIComponent(item.year||''));
+      const r = await apiFetch("/miniapp/poster?title=" + encodeURIComponent(cleanedTitle) + "&year=" + encodeURIComponent(item.year || ""));
       if (r && r.ok && r.meta && r.meta.poster) {
         item.poster   = r.meta.poster;
         item.backdrop = r.meta.backdrop || item.backdrop;
         item.rating   = r.meta.rating   || item.rating;
-        const card = document.querySelector('[data-file-id="'+item.id+'"]');
-        if (card) {
-          const noPost = card.querySelector('.card-no-poster,.list-no-poster');
-          if (noPost) {
-            const isListMode = noPost.classList.contains('list-no-poster');
-            const img = document.createElement('img');
-            img.className = isListMode ? 'list-poster' : 'card-poster';
-            img.src = item.poster; img.alt = esc(item.name||item.group_title); img.loading = 'lazy';
-            img.onerror = function() { this.style.display='none'; noPost.style.display='flex'; };
-            noPost.parentNode.insertBefore(img, noPost);
-            noPost.style.display = 'none';
-          }
-          if (item.rating) {
-            const meta = card.querySelector('.card-meta');
-            if (meta && !meta.querySelector('.card-rating')) {
-              meta.innerHTML = (item.year?'<span class="card-year">'+item.year+'</span>':'') +
-                               '<span class="card-rating">&#9733; '+item.rating+'</span>';
-            }
-          }
-        }
+        _applyPosterToCard(item);
       }
-      // If no poster found: card remains as text placeholder — no broken image shown
     } catch(e) {}
-    await new Promise(r => setTimeout(r, 50));
+    await new Promise(r => setTimeout(r, 60));
   }
 }
 
-// ─── RENDER ───────────────────────────────────────────────────────────────────
+function _applyPosterToCard(item) {
+  const card = document.querySelector('[data-file-id="' + item.id + '"]');
+  if (!card || !item.poster) return;
+  const noPost = card.querySelector(".card-no-poster,.list-no-poster");
+  if (!noPost) return; // already has img
+  const isListMode = noPost.classList.contains("list-no-poster");
+  const img = document.createElement("img");
+  img.className = isListMode ? "list-poster" : "card-poster";
+  img.src = item.poster;
+  img.alt = esc(item.name || item.group_title);
+  img.loading = "lazy";
+  img.onerror = function() { this.style.display="none"; noPost.style.display="flex"; };
+  noPost.parentNode.insertBefore(img, noPost);
+  noPost.style.display = "none";
+  if (item.rating) {
+    const meta = card.querySelector(".card-meta");
+    if (meta && !meta.querySelector(".card-rating")) {
+      meta.innerHTML = (item.year ? '<span class="card-year">' + item.year + "</span>" : "") +
+                       '<span class="card-rating">&#9733; ' + item.rating + "</span>";
+    }
+  }
+}
+
+// ── Render ─────────────────────────────────────────────────────────────────────
 function renderGrid(container, items, mode) {
-  container.className = mode==='list' ? 'grid list-mode' : 'grid';
-  container.innerHTML = '';
-  if (!items||!items.length) { container.innerHTML = emptyState('No files yet',''); return; }
-  items.forEach(item => container.appendChild(mode==='list' ? buildListCard(item) : buildCard(item)));
+  container.className = mode === "list" ? "grid list-mode" : "grid";
+  container.innerHTML = "";
+  if (!items || !items.length) { container.innerHTML = emptyState("No files yet", ""); return; }
+  items.forEach(item => container.appendChild(mode === "list" ? buildListCard(item) : buildCard(item)));
 }
 
 function buildCard(item) {
-  const div = document.createElement('div');
-  div.className = 'movie-card';
-  div.setAttribute('data-file-id', item.id);
+  const div = document.createElement("div");
+  div.className = "movie-card";
+  div.setAttribute("data-file-id", item.id);
   div.onclick = () => openDetail(item.id);
-  const name  = esc(item.name||item.group_title);
-  const count = item.file_count>1 ? '<div class="file-count-badge">'+item.file_count+' files</div>' : '';
+  const name  = esc(item.name || item.group_title);
+  const count = item.file_count > 1 ? '<div class="file-count-badge">' + item.file_count + " files</div>" : "";
   const posterHtml = item.poster
-    ? '<img class="card-poster" src="'+item.poster+'" alt="'+name+'" loading="lazy" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'"><div class="card-no-poster" style="display:none">'+name+'</div>'
-    : '<div class="card-no-poster">'+name+'</div>';
-  const rating = item.rating ? '<span class="card-rating">&#9733; '+item.rating+'</span>' : '';
-  const year   = item.year   ? '<span class="card-year">'+item.year+'</span>' : '';
-  const typeBadge = (item.type==='tv'||item.type==='series')
-    ? '<span class="badge badge-blue" style="margin-top:3px;display:inline-block">TV</span>' : '';
-  div.innerHTML = count+posterHtml+'<div class="card-info"><div class="card-title">'+name+'</div><div class="card-meta">'+year+rating+'</div>'+typeBadge+'</div>';
+    ? '<img class="card-poster" src="' + item.poster + '" alt="' + name + '" loading="lazy" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'"><div class="card-no-poster" style="display:none">' + name + "</div>"
+    : '<div class="card-no-poster">' + name + "</div>";
+  const rating = item.rating ? '<span class="card-rating">&#9733; ' + item.rating + "</span>" : "";
+  const year   = item.year   ? '<span class="card-year">' + item.year + "</span>" : "";
+  const typeBadge = (item.type === "tv" || item.type === "series")
+    ? '<span class="badge badge-blue" style="margin-top:3px;display:inline-block">TV</span>' : "";
+  div.innerHTML = count + posterHtml + '<div class="card-info"><div class="card-title">' + name + '</div><div class="card-meta">' + year + rating + "</div>" + typeBadge + "</div>";
   return div;
 }
 
 function buildListCard(item) {
-  const div = document.createElement('div');
-  div.className = 'list-card';
-  div.setAttribute('data-file-id', item.id);
+  const div = document.createElement("div");
+  div.className = "list-card";
+  div.setAttribute("data-file-id", item.id);
   div.onclick = () => openDetail(item.id);
-  const name   = esc(item.name||item.group_title);
-  const genres = (item.genres||[]).slice(0,2).map(g=>'<span class="badge badge-gray">'+esc(g)+'</span>').join('');
-  const rating = item.rating ? '<span class="badge badge-gold">&#9733; '+item.rating+'</span>' : '';
-  const type   = (item.type==='tv'||item.type==='series') ? '<span class="badge badge-blue">TV</span>' : '<span class="badge badge-green">Movie</span>';
+  const name   = esc(item.name || item.group_title);
+  const genres = (item.genres || []).slice(0,2).map(g => '<span class="badge badge-gray">' + esc(g) + "</span>").join("");
+  const rating = item.rating ? '<span class="badge badge-gold">&#9733; ' + item.rating + "</span>" : "";
+  const type   = (item.type === "tv" || item.type === "series") ? '<span class="badge badge-blue">TV</span>' : '<span class="badge badge-green">Movie</span>';
   const poster = item.poster
-    ? '<img class="list-poster" src="'+item.poster+'" alt="'+name+'" loading="lazy" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'"><div class="list-no-poster" style="display:none">'+name.slice(0,18)+'</div>'
-    : '<div class="list-no-poster">'+name.slice(0,18)+'</div>';
-  const fc = item.file_count>1 ? ' &middot; '+item.file_count+' files' : '';
-  div.innerHTML = poster+'<div class="list-info"><div class="list-title">'+name+'</div><div class="list-sub">'+(item.year||'')+fc+'</div><div class="list-badges">'+type+rating+genres+'</div></div><span style="color:var(--muted);font-size:18px">&#8250;</span>';
+    ? '<img class="list-poster" src="' + item.poster + '" alt="' + name + '" loading="lazy" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'"><div class="list-no-poster" style="display:none">' + name.slice(0,18) + "</div>"
+    : '<div class="list-no-poster">' + name.slice(0,18) + "</div>";
+  const fc = item.file_count > 1 ? " &middot; " + item.file_count + " files" : "";
+  div.innerHTML = poster + '<div class="list-info"><div class="list-title">' + name + '</div><div class="list-sub">' + (item.year || "") + fc + '</div><div class="list-badges">' + type + rating + genres + "</div></div>" + '<span style="color:var(--muted);font-size:18px">&#8250;</span>';
   return div;
 }
 
-// ─── DETAIL ───────────────────────────────────────────────────────────────────
+// ── Detail ─────────────────────────────────────────────────────────────────────
 async function openDetail(fileId) {
-  document.getElementById('detailContent').innerHTML =
+  document.getElementById("detailContent").innerHTML =
     '<div class="detail-hero detail-hero-nobg" style="min-height:80px"></div>' +
     '<div class="detail-content"><div class="detail-poster-row no-backdrop">' +
     '<div class="detail-poster-placeholder">Loading...</div>' +
     '<div class="detail-poster-info">' +
     '<div class="skeleton" style="height:24px;width:70%;border-radius:6px;margin-bottom:8px"></div>' +
     '<div class="skeleton" style="height:14px;width:50%;border-radius:4px"></div>' +
-    '</div></div>' +
+    "</div></div>" +
     '<div class="skeleton" style="height:80px;border-radius:10px;margin-bottom:12px"></div>' +
     '<div class="skeleton" style="height:60px;border-radius:10px"></div></div>';
-  document.getElementById('detailSheet').classList.add('open');
-  document.body.style.overflow = 'hidden';
-  const data = await apiFetch('/miniapp/group_details?id='+encodeURIComponent(fileId));
-  if (!data||!data.ok) {
-    document.getElementById('detailContent').innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Could not load details.</div>';
+  document.getElementById("detailSheet").classList.add("open");
+  document.body.style.overflow = "hidden";
+  const data = await apiFetch("/miniapp/group_details?id=" + encodeURIComponent(fileId));
+  if (!data || !data.ok) {
+    document.getElementById("detailContent").innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Could not load details.</div>';
     return;
   }
   renderDetail(data);
 }
 
 function renderDetail(data) {
-  const container = document.getElementById('detailContent');
+  const container = document.getElementById("detailContent");
   const meta = data.meta || {};
-  const isSeries = data.content_type === 'series';
-  const title    = meta.title    || data.caption_title || 'Unknown';
-  const year     = meta.year     || '';
+  const isSeries = data.content_type === "series";
+  const title    = meta.title    || data.caption_title || "Unknown";
+  const year     = meta.year     || "";
   const poster   = meta.poster   || null;
   const backdrop = meta.backdrop || null;
   const rating   = meta.rating   || null;
-  const plot     = meta.plot     || '';
+  const plot     = meta.plot     || "";
   const genres   = meta.genres   || [];
   const cast     = meta.cast     || [];
-  const director = meta.director || '';
-  const runtime  = meta.runtime  || '';
-  const tagline  = meta.tagline  || '';
-  const status   = meta.status   || '';
-  const type     = meta.type     || data.content_type || 'movie';
+  const director = meta.director || "";
+  const runtime  = meta.runtime  || "";
+  const tagline  = meta.tagline  || "";
+  const status   = meta.status   || "";
+  const type     = meta.type     || data.content_type || "movie";
   const seasons  = meta.seasons  || null;
   const episodes = meta.episodes || null;
 
   const backdropHtml = backdrop
-    ? '<div class="detail-hero"><img class="detail-backdrop-img" src="'+backdrop+'" alt="'+esc(title)+'" onerror="this.parentElement.remove();document.getElementById(\'detail-poster-row-inner\').classList.add(\'no-backdrop\')"><div class="detail-backdrop-gradient"></div></div>'
-    : '';
-
+    ? '<div class="detail-hero"><img class="detail-backdrop-img" src="' + backdrop + '" alt="' + esc(title) + '" onerror="this.parentElement.remove()"><div class="detail-backdrop-gradient"></div></div>'
+    : "";
   const posterHtml = poster
-    ? '<img class="detail-poster" src="'+poster+'" alt="'+esc(title)+'" onerror="this.outerHTML=\'<div class=\\\'detail-poster-placeholder\\\'>'+esc(title).slice(0,25)+'</div>\'">'
-    : '<div class="detail-poster-placeholder">'+esc(title).slice(0,25)+'</div>';
-
-  const ratingHtml = rating ? '<span class="rating-pill">&#9733; '+rating+' <span style="font-weight:400;color:var(--muted)">/10</span></span>' : '';
-  const yearBadge  = year   ? '<span class="badge badge-gray">'+year+'</span>' : '';
-  const typeBadge  = (type==='tv'||isSeries) ? '<span class="badge badge-blue">TV Series</span>' : '<span class="badge badge-green">Movie</span>';
-  const genreHtml  = genres.map(g=>'<span class="badge badge-gray">'+esc(g)+'</span>').join('');
-  const castHtml   = cast.length ? cast.map(c=>'<div class="cast-chip">'+esc(c)+'</div>').join('') : '<span style="color:var(--muted);font-size:12px">N/A</span>';
-
-  const captionTitle   = data.caption_title || '';
-  const fileCount      = data.file_count    || 0;
-  const captionBoxHtml = captionTitle
-    ? '<div class="detail-caption-box"><div class="detail-caption-label">Available In Database</div><div class="detail-caption-text">'+esc(captionTitle)+'</div><div class="detail-caption-count">'+fileCount+' file'+(fileCount!==1?'s':'')+ ' available</div></div>' : '';
-
-  const dbLangs = (data.db_languages||[]).join(', ');
+    ? ["<img class=\"detail-poster\" src=\"", poster, "\" alt=\"", esc(title), "\" loading=\"lazy\">"].join("")
+    : ["<div class=\"detail-poster-placeholder\">", esc(title).slice(0,25), "</div>"].join("");
+  const ratingHtml = rating ? '<span class="rating-pill">&#9733; ' + rating + ' <span style="font-weight:400;color:var(--muted)">/10</span></span>' : "";
+  const yearBadge  = year   ? '<span class="badge badge-gray">' + year + "</span>" : "";
+  const typeBadge  = (type === "tv" || isSeries) ? '<span class="badge badge-blue">TV Series</span>' : '<span class="badge badge-green">Movie</span>';
+  const genreHtml  = genres.map(g => '<span class="badge badge-gray">' + esc(g) + "</span>").join("");
+  const castHtml   = cast.length ? cast.map(c => '<div class="cast-chip">' + esc(c) + "</div>").join("") : '<span style="color:var(--muted);font-size:12px">N/A</span>';
+  const captionBoxHtml = data.caption_title
+    ? '<div class="detail-caption-box"><div class="detail-caption-label">Available In Database</div><div class="detail-caption-text">' + esc(data.caption_title) + '</div><div class="detail-caption-count">' + (data.file_count || 0) + " file" + ((data.file_count || 0) !== 1 ? "s" : "") + " available</div></div>" : "";
+  const dbLangs = (data.db_languages || []).join(", ");
   const infoItems = [
-    director ? '<div class="info-item"><div class="label">Director</div><div class="value">'+esc(director)+'</div></div>' : '',
-    runtime  ? '<div class="info-item"><div class="label">Runtime</div><div class="value">'+esc(runtime)+'</div></div>' : '',
-    seasons  ? '<div class="info-item"><div class="label">Seasons</div><div class="value">'+seasons+'</div></div>' : '',
-    episodes ? '<div class="info-item"><div class="label">Episodes</div><div class="value">'+episodes+'</div></div>' : '',
-    status   ? '<div class="info-item"><div class="label">Status</div><div class="value">'+esc(status)+'</div></div>' : '',
-    data.db_quality   ? '<div class="info-item"><div class="label">Quality</div><div class="value">'+esc(data.db_quality)+'</div></div>' : '',
-    data.db_print     ? '<div class="info-item"><div class="label">Print</div><div class="value">'+esc(data.db_print)+'</div></div>' : '',
-    dbLangs           ? '<div class="info-item"><div class="label">Languages</div><div class="value">'+esc(dbLangs)+'</div></div>' : '',
-    data.db_subtitles ? '<div class="info-item"><div class="label">Subtitles</div><div class="value">'+esc(data.db_subtitles)+'</div></div>' : '',
-  ].filter(Boolean).join('');
+    director ? '<div class="info-item"><div class="label">Director</div><div class="value">' + esc(director) + "</div></div>" : "",
+    runtime  ? '<div class="info-item"><div class="label">Runtime</div><div class="value">' + esc(runtime) + "</div></div>" : "",
+    seasons  ? '<div class="info-item"><div class="label">Seasons</div><div class="value">' + seasons + "</div></div>" : "",
+    episodes ? '<div class="info-item"><div class="label">Episodes</div><div class="value">' + episodes + "</div></div>" : "",
+    status   ? '<div class="info-item"><div class="label">Status</div><div class="value">' + esc(status) + "</div></div>" : "",
+    data.db_quality ? '<div class="info-item"><div class="label">Quality</div><div class="value">' + esc(data.db_quality) + "</div></div>" : "",
+    data.db_print   ? '<div class="info-item"><div class="label">Print</div><div class="value">' + esc(data.db_print) + "</div></div>" : "",
+    dbLangs         ? '<div class="info-item"><div class="label">Languages</div><div class="value">' + esc(dbLangs) + "</div></div>" : "",
+    data.db_subtitles ? '<div class="info-item"><div class="label">Subtitles</div><div class="value">' + esc(data.db_subtitles) + "</div></div>" : "",
+  ].filter(Boolean).join("");
 
-  let filesHtml = '';
+  let filesHtml = "";
   if (isSeries && data.seasons) {
-    const seasonNums = Object.keys(data.seasons).map(Number).sort((a,b)=>a-b);
-    const tabsHtml = seasonNums.map(s=>'<div class="s-tab'+(s===seasonNums[0]?' active':'')+ '" onclick="switchSeason('+s+',this)">'+(s===0?'Extras':'S'+String(s).padStart(2,'0'))+'</div>').join('');
-    let panels='', totalFiles=0;
+    const seasonNums = Object.keys(data.seasons).map(Number).sort((a,b) => a-b);
+    const tabsHtml = seasonNums.map(s =>
+      '<div class="s-tab' + (s === seasonNums[0] ? " active" : "") + '" onclick="switchSeason(' + s + ',this)">' + (s === 0 ? "Extras" : "S" + String(s).padStart(2,"0")) + "</div>"
+    ).join("");
+    let panels = "", totalFiles = 0;
     for (const sNum of seasonNums) {
       const epData = data.seasons[String(sNum)];
-      let epHtml = '';
-      for (const [epNum,epInfo] of Object.entries(epData).sort((a,b)=>Number(a[0])-Number(b[0]))) {
+      let epHtml = "";
+      for (const [epNum, epInfo] of Object.entries(epData).sort((a,b) => Number(a[0]) - Number(b[0]))) {
         totalFiles += epInfo.files.length;
-        const filesInEp = epInfo.files.map(f=>fileBtn(f)).join('');
-        if (Number(epNum)===0) epHtml += '<div class="ep-group"><div class="ep-files open">'+filesInEp+'</div></div>';
-        else {
-          const eid='ep-'+sNum+'-'+epNum;
-          epHtml += '<div class="ep-group"><div class="ep-header" onclick="toggleEp(\''+eid+'\',this)"><span class="ep-header-title">'+esc(epInfo.label)+'</span><span class="ep-chevron">&#8250;</span></div><div class="ep-files" id="'+eid+'">'+filesInEp+'</div></div>';
+        const filesInEp = epInfo.files.map(f => fileBtn(f)).join("");
+        if (Number(epNum) === 0) {
+          epHtml += '<div class="ep-group"><div class="ep-files open">' + filesInEp + "</div></div>";
+        } else {
+          const eid = "ep-" + sNum + "-" + epNum;
+          epHtml += '<div class="ep-group"><div class="ep-header" onclick="toggleEp(\'' + eid + '\',this)"><span class="ep-header-title">' + esc(epInfo.label) + '</span><span class="ep-chevron">&#8250;</span></div><div class="ep-files" id="' + eid + '">' + filesInEp + "</div></div>";
         }
       }
-      panels += '<div class="season-panel" id="season-panel-'+sNum+'" style="'+(sNum===seasonNums[0]?'':'display:none')+'">'+epHtml+'</div>';
+      panels += '<div class="season-panel" id="season-panel-' + sNum + '" style="' + (sNum === seasonNums[0] ? "" : "display:none") + '">' + epHtml + "</div>";
     }
-    filesHtml = '<div class="files-section"><div class="detail-section-title">Available Files ('+totalFiles+')</div><div class="season-tabs">'+tabsHtml+'</div>'+panels+'</div>';
+    filesHtml = '<div class="files-section"><div class="detail-section-title">Available Files (' + totalFiles + ")</div>" + '<div class="season-tabs">' + tabsHtml + "</div>" + panels + "</div>";
   } else if (data.movie_files && data.movie_files.length) {
-    filesHtml = '<div class="files-section"><div class="detail-section-title">Available Files ('+data.movie_files.length+')</div>'+data.movie_files.map(f=>fileBtn(f)).join('')+'</div>';
+    filesHtml = '<div class="files-section"><div class="detail-section-title">Available Files (' + data.movie_files.length + ")</div>" + data.movie_files.map(f => fileBtn(f)).join("") + "</div>";
   }
 
-  // NOTE: "All Seasons" combined section intentionally removed
-
   container.innerHTML = backdropHtml +
-    '<div class="detail-content"><div class="detail-poster-row'+(backdrop?'':' no-backdrop')+'" id="detail-poster-row-inner">' +
-    posterHtml + '<div class="detail-poster-info"><div class="detail-title">'+esc(title)+'</div>' +
-    (tagline?'<div class="detail-tagline">'+esc(tagline)+'</div>':'') +
-    '<div class="detail-meta-row">'+ratingHtml+' '+yearBadge+' '+typeBadge+'</div></div></div>' +
+    '<div class="detail-content"><div class="detail-poster-row' + (backdrop ? "" : " no-backdrop") + '">' +
+    posterHtml + '<div class="detail-poster-info"><div class="detail-title">' + esc(title) + "</div>" +
+    (tagline ? '<div class="detail-tagline">' + esc(tagline) + "</div>" : "") +
+    '<div class="detail-meta-row">' + ratingHtml + " " + yearBadge + " " + typeBadge + "</div></div></div>" +
     captionBoxHtml +
-    (genreHtml ? '<div class="detail-section"><div class="detail-section-title">Genres</div><div class="genre-pills">'+genreHtml+'</div></div>' : '') +
-    (plot      ? '<div class="detail-section"><div class="detail-section-title">Plot</div><div class="detail-plot">'+esc(plot)+'</div></div>' : '') +
-    (cast.length ? '<div class="detail-section"><div class="detail-section-title">Cast</div><div class="cast-list">'+castHtml+'</div></div>' : '') +
-    (infoItems ? '<div class="detail-section"><div class="detail-section-title">Info</div><div class="info-grid">'+infoItems+'</div></div>' : '') +
-    filesHtml + '</div>';
+    (genreHtml ? '<div class="detail-section"><div class="detail-section-title">Genres</div><div class="genre-pills">' + genreHtml + "</div></div>" : "") +
+    (plot ? '<div class="detail-section"><div class="detail-section-title">Plot</div><div class="detail-plot">' + esc(plot) + "</div></div>" : "") +
+    (cast.length ? '<div class="detail-section"><div class="detail-section-title">Cast</div><div class="cast-list">' + castHtml + "</div></div>" : "") +
+    (infoItems ? '<div class="detail-section"><div class="detail-section-title">Info</div><div class="info-grid">' + infoItems + "</div></div>" : "") +
+    filesHtml + "</div>";
 }
 
 function fileBtn(f) {
-  const qualLabel  = f.quality || (f.season>0 ? 'TV' : 'HD');
-  const printLabel = f.print_type ? f.print_type.slice(0,7) : '';
+  const qualLabel  = f.quality || (f.season > 0 ? "TV" : "HD");
+  const printLabel = f.print_type ? f.print_type.slice(0,7) : "";
   const iconHtml   = printLabel
-    ? '<span style="font-size:8px">'+esc(qualLabel)+'</span><span style="font-size:7px;color:var(--muted)">'+esc(printLabel)+'</span>'
-    : '<span>'+esc(qualLabel)+'</span>';
-  return '<button class="file-btn" id="fbtn-'+esc(f.id)+'" data-file-id="'+esc(f.id)+'" onclick="requestFile(this)"><div class="file-btn-icon">'+iconHtml+'</div><div class="file-btn-info"><div class="file-btn-caption">'+esc(f.caption||f.raw_name||'')+'</div></div><div class="file-btn-right"><span class="file-btn-size">'+esc(f.size)+'</span></div></button>';
+    ? '<span style="font-size:8px">' + esc(qualLabel) + '</span><span style="font-size:7px;color:var(--muted)">' + esc(printLabel) + "</span>"
+    : "<span>" + esc(qualLabel) + "</span>";
+  return '<button class="file-btn" id="fbtn-' + esc(f.id) + '" data-file-id="' + esc(f.id) + '" onclick="requestFile(this)"><div class="file-btn-icon">' + iconHtml + '</div><div class="file-btn-info"><div class="file-btn-caption">' + esc(f.caption || f.raw_name || "") + '</div></div><div class="file-btn-right"><span class="file-btn-size">' + esc(f.size) + "</span></div></button>";
 }
 
 function requestFile(btn) {
-  const fileId = btn.getAttribute('data-file-id');
+  const fileId = btn.getAttribute("data-file-id");
   if (!fileId) return;
-  tg.HapticFeedback.impactOccurred('medium');
-
-  // Disable button to prevent double-tap
-  btn.style.opacity = '0.6';
-  btn.style.pointerEvents = 'none';
-
-  // Fire the send request to the server (fire-and-forget)
-  fetch(API_BASE + '/miniapp/send_file', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ file_id: fileId, initData: tg.initData || '' }),
+  tg.HapticFeedback.impactOccurred("medium");
+  btn.style.opacity = "0.6";
+  btn.style.pointerEvents = "none";
+  fetch(API_BASE + "/miniapp/send_file", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ file_id: fileId, initData: tg.initData || "" }),
   }).catch(() => {});
-
-  // Open the bot in Telegram — this navigates the user to the bot chat
-  // where they will receive the file. Then close the miniapp.
-  try {
-    tg.openTelegramLink('https://t.me/' + BOT_USERNAME);
-  } catch(e) {}
-  // tg.close() is called after a tiny delay so the link opens first
+  try { tg.openTelegramLink("https://t.me/" + BOT_USERNAME); } catch(e) {}
   setTimeout(() => { try { tg.close(); } catch(e) {} }, 400);
 }
 
 function switchSeason(sNum, tabEl) {
-  document.querySelectorAll('.s-tab').forEach(t=>t.classList.remove('active'));
-  tabEl.classList.add('active');
-  document.querySelectorAll('.season-panel').forEach(p=>p.style.display='none');
-  const panel = document.getElementById('season-panel-'+sNum);
-  if (panel) { panel.style.display='block'; panel.scrollIntoView({behavior:'smooth',block:'nearest'}); }
+  document.querySelectorAll(".s-tab").forEach(t => t.classList.remove("active"));
+  tabEl.classList.add("active");
+  document.querySelectorAll(".season-panel").forEach(p => p.style.display = "none");
+  const panel = document.getElementById("season-panel-" + sNum);
+  if (panel) { panel.style.display = "block"; panel.scrollIntoView({ behavior: "smooth", block: "nearest" }); }
 }
 function toggleEp(id, headerEl) {
   const panel = document.getElementById(id);
   if (!panel) return;
-  const isOpen = panel.classList.toggle('open');
-  headerEl.querySelector('.ep-chevron').classList.toggle('open', isOpen);
+  const isOpen = panel.classList.toggle("open");
+  headerEl.querySelector(".ep-chevron").classList.toggle("open", isOpen);
 }
 function closeDetail() {
-  document.getElementById('detailSheet').classList.remove('open');
-  document.body.style.overflow = '';
+  document.getElementById("detailSheet").classList.remove("open");
+  document.body.style.overflow = "";
 }
 
-let tsY=0;
-document.getElementById('detailPanel').addEventListener('touchstart',e=>{tsY=e.touches[0].clientY;},{passive:true});
-document.getElementById('detailPanel').addEventListener('touchend',e=>{
-  if(e.changedTouches[0].clientY-tsY>80&&document.getElementById('detailPanel').scrollTop===0) closeDetail();
-},{passive:true});
+let tsY = 0;
+document.getElementById("detailPanel").addEventListener("touchstart", e => { tsY = e.touches[0].clientY; }, { passive: true });
+document.getElementById("detailPanel").addEventListener("touchend", e => {
+  if (e.changedTouches[0].clientY - tsY > 80 && document.getElementById("detailPanel").scrollTop === 0) closeDetail();
+}, { passive: true });
 
-// ─── TABS ─────────────────────────────────────────────────────────────────────
+// ── Tabs ──────────────────────────────────────────────────────────────────────
 function switchTab(tab, el) {
-  if (tab !== 'search') {
-    document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
+  if (tab !== "search") {
+    document.querySelectorAll(".chip").forEach(c => c.classList.remove("active"));
     activeChip = null;
-    document.getElementById('searchTab').style.display = 'none';
+    document.getElementById("searchTab").style.display = "none";
   }
   currentTab = tab;
-  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
-  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
-  const tabEl = el || document.querySelector('[data-tab="'+tab+'"]');
-  if (tabEl) tabEl.classList.add('active');
-  document.getElementById('screen-'+tab).classList.add('active');
+  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+  document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+  const tabEl = el || document.querySelector('[data-tab="' + tab + '"]');
+  if (tabEl) tabEl.classList.add("active");
+  document.getElementById("screen-" + tab).classList.add("active");
   tg.HapticFeedback.selectionChanged();
-  if (tab !== 'search') loadTab(tab);
+  if (tab !== "search") loadTab(tab);
 }
 
-document.getElementById('searchInput').addEventListener('input', function() {
+document.getElementById("searchInput").addEventListener("input", function() {
   const q = this.value.trim();
-  document.getElementById('clearBtn').style.display = q ? 'block' : 'none';
+  document.getElementById("clearBtn").style.display = q ? "block" : "none";
   if (!q) {
-    document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
+    document.querySelectorAll(".chip").forEach(c => c.classList.remove("active"));
     activeChip = null;
-    document.getElementById('searchTab').style.display = 'none';
-    switchTab(preChipTab||'movies', document.querySelector('[data-tab="'+(preChipTab||'movies')+'"]'));
+    document.getElementById("searchTab").style.display = "none";
+    switchTab(preChipTab || "movies", document.querySelector('[data-tab="' + (preChipTab || "movies") + '"]'));
     return;
   }
-  if (currentTab !== 'search') {
-    preChipTab = currentTab !== 'search' ? currentTab : preChipTab;
+  if (currentTab !== "search") {
+    preChipTab = currentTab !== "search" ? currentTab : preChipTab;
     showSearchTab();
   }
   clearTimeout(searchDebounce);
@@ -952,44 +876,52 @@ document.getElementById('searchInput').addEventListener('input', function() {
 });
 
 function clearSearch() {
-  document.getElementById('searchInput').value = '';
-  document.getElementById('clearBtn').style.display = 'none';
-  document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
+  document.getElementById("searchInput").value = "";
+  document.getElementById("clearBtn").style.display = "none";
+  document.querySelectorAll(".chip").forEach(c => c.classList.remove("active"));
   activeChip = null;
-  document.getElementById('searchTab').style.display = 'none';
-  switchTab('movies', document.querySelector('[data-tab="movies"]'));
+  document.getElementById("searchTab").style.display = "none";
+  switchTab("movies", document.querySelector('[data-tab="movies"]'));
 }
 
 function setView(tab, mode) {
   viewModes[tab] = mode;
-  document.getElementById(tab+'GridBtn').classList.toggle('active', mode==='grid');
-  document.getElementById(tab+'ListBtn').classList.toggle('active', mode==='list');
-  const st = tabState[tab];
-  if (st.files.length) renderGrid(document.getElementById(tab+'Grid'), st.files, mode);
+  document.getElementById(tab + "GridBtn").classList.toggle("active", mode === "grid");
+  document.getElementById(tab + "ListBtn").classList.toggle("active", mode === "list");
+  // Re-render current page with new mode
+  const grid = document.getElementById(tab + "Grid");
+  const cards = Array.from(grid.children).map(el => {
+    const id = el.getAttribute("data-file-id");
+    return { id, name: el.querySelector(".card-title,.list-title")?.textContent || "", group_title: "", year: "", poster: el.querySelector("img")?.src || null, rating: null, genres: [], type: "", file_count: 1 };
+  });
+  // Just toggle class, don't rebuild
+  grid.className = mode === "list" ? "grid list-mode" : "grid";
   tg.HapticFeedback.selectionChanged();
 }
 
 function esc(s) {
-  if (!s) return '';
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  if (!s) return "";
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
 function showToast(msg, d=2800) {
-  const t = document.getElementById('toast');
-  t.textContent = msg; t.classList.add('show');
-  setTimeout(()=>t.classList.remove('show'), d);
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), d);
 }
 function skeletonGrid(n) {
-  return Array(n).fill(0).map(()=>'<div class="movie-card"><div class="skeleton" style="width:100%;aspect-ratio:2/3"></div><div class="card-info"><div class="skeleton" style="height:12px;width:80%;margin-bottom:6px;border-radius:4px"></div><div class="skeleton" style="height:10px;width:50%;border-radius:4px"></div></div></div>').join('');
+  return Array(n).fill(0).map(() =>
+    '<div class="movie-card"><div class="skeleton" style="width:100%;aspect-ratio:2/3"></div><div class="card-info"><div class="skeleton" style="height:12px;width:80%;margin-bottom:6px;border-radius:4px"></div><div class="skeleton" style="height:10px;width:50%;border-radius:4px"></div></div></div>'
+  ).join("");
 }
 function emptyState(title, sub) {
-  return '<div class="empty-state"><div class="empty-title">'+title+'</div><div class="empty-sub">'+(sub||'')+'</div></div>';
+  return '<div class="empty-state"><div class="empty-title">' + title + '</div><div class="empty-sub">' + (sub || "") + "</div></div>";
 }
 
 tg.BackButton.onClick(() => {
-  if (document.getElementById('detailSheet').classList.contains('open')) { closeDetail(); tg.BackButton.hide(); }
+  if (document.getElementById("detailSheet").classList.contains("open")) { closeDetail(); tg.BackButton.hide(); }
 });
-document.getElementById('detailSheet').addEventListener('transitionend', () => {
-  if (document.getElementById('detailSheet').classList.contains('open')) tg.BackButton.show();
+document.getElementById("detailSheet").addEventListener("transitionend", () => {
+  if (document.getElementById("detailSheet").classList.contains("open")) tg.BackButton.show();
   else tg.BackButton.hide();
 });
 </script>
