@@ -21,7 +21,7 @@ routes = web.RouteTableDef()
 @routes.get("/", allow_head=True)
 async def root_route_handler(request):
     return web.Response(
-        text='<h1 align="center"><a href="https://t.me/Silicon_Bot_Update"><b>Silicon Bots</b></a></h1>',
+        text='<h1 align="center"><a href="https://t.me/Navex_Movies"><b>Movie Zone</b></a></h1>',
         content_type='text/html'
     )
 
@@ -595,6 +595,111 @@ async def _get_meta(title, year='', tmdb_only=False):
     return tmdb  # may be None or poster-less TMDB result
 
 # ── MINI APP ROUTES ───────────────────────────────────────────────────────────
+
+_ANIME_RE = re.compile(
+    r'\b(anime|hentai|ova|ona|oad|manhwa|manhua|donghua|'
+    r'shonen|seinen|shoujo|josei|isekai|mecha|'
+    r'dubbed\s*anime|sub\s*anime)\b|'
+    r'[\u3040-\u30FF\u4E00-\u9FFF]',
+    re.IGNORECASE,
+)
+
+def _detect_content_type(fname, tmdb_type=None, tmdb_genres=None):
+    """Classify a file as 'movie', 'series', or 'anime'."""
+    if _ANIME_RE.search(fname):
+        return 'anime'
+    if tmdb_genres:
+        genre_str = ' '.join(g.lower() for g in tmdb_genres)
+        if 'animation' in genre_str or 'anime' in genre_str:
+            return 'anime'
+    if tmdb_type == 'tv' or _is_series(fname):
+        return 'series'
+    return 'movie'
+
+
+@routes.get("/miniapp/browse")
+async def miniapp_browse(request):
+    """
+    GET /miniapp/browse?type=movies|series|anime&page=0&limit=24
+    Filters DB files by content type and returns grouped cards.
+    """
+    if not _DB_OK:
+        return _jresp({"ok": False, "error": "DB unavailable"}, 500)
+
+    try:
+        raw_type = request.rel_url.query.get("type", "movies").lower().rstrip("s")
+        if raw_type in ("movie", "movies"):
+            content_type = "movie"
+        elif raw_type in ("serie", "series"):
+            content_type = "series"
+        elif raw_type == "anime":
+            content_type = "anime"
+        else:
+            content_type = "movie"
+
+        page  = max(0, int(request.rel_url.query.get("page", 0)))
+        limit = min(int(request.rel_url.query.get("limit", 24)), 40)
+    except (ValueError, TypeError):
+        page, limit, content_type = 0, 24, "movie"
+
+    # Scan a large window and filter — more docs needed since we discard many
+    scan_skip  = page * limit * 6
+    scan_limit = limit * 20
+    all_docs   = await _async_all_files_paged(scan_skip, scan_limit)
+
+    # Filter by content type using filename heuristics
+    def _classify(doc):
+        stored = doc.get("category")
+        if stored in ("movie", "series", "anime"):
+            return stored
+        fname = doc.get("caption") or doc.get("file_name", "")
+        return _detect_content_type(fname)
+
+    filtered = [d for d in all_docs if _classify(d) == content_type]
+
+    groups = _group(filtered)
+    sorted_groups = sorted(groups.values(), key=lambda g: g["rep"]["_id"], reverse=True)
+    target   = sorted_groups[:limit]
+    has_more = len(sorted_groups) > limit
+
+    results = []
+    for grp in target:
+        rep   = grp["rep"]
+        fname = rep.get("caption") or rep.get("file_name", "")
+        title = _clean_title(fname)
+        year  = grp.get("year") or _extract_year(fname)
+
+        # Use cached meta only — no blocking network calls during browse
+        ck  = f"tmdb|{title.lower().strip()}|{year}"
+        ci  = f"imdb|{title.lower().strip()}|{year}"
+        meta = None
+        for ck2 in (ck, ci):
+            c = _META_CACHE.get(ck2)
+            if c and (time.time() - c[0]) < _META_CACHE_TTL and c[1]:
+                meta = c[1]
+                break
+
+        results.append({
+            "group_title": title,
+            "id":          str(rep["_id"]),
+            "name":        (meta or {}).get("title") or title,
+            "year":        (meta or {}).get("year") or year,
+            "poster":      (meta or {}).get("poster"),
+            "backdrop":    (meta or {}).get("backdrop"),
+            "rating":      (meta or {}).get("rating"),
+            "genres":      (meta or {}).get("genres", []),
+            "type":        content_type,
+            "file_count":  len(grp["files"]),
+        })
+
+    return _jresp({"ok": True, "results": results, "count": len(results),
+                   "page": page, "has_more": has_more})
+
+
+@routes.options("/miniapp/browse")
+async def miniapp_browse_options(request):
+    return web.Response(headers=_CORS)
+
 
 @routes.get("/miniapp")
 async def miniapp_serve(request):
