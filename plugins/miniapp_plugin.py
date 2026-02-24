@@ -11,7 +11,7 @@ from pyrogram.types import (
     InlineKeyboardButton,
     WebAppInfo,
 )
-from pyrogram.errors import FloodWait
+from pyrogram.errors import FloodWait, UserIsBlocked, InputUserDeactivated
 
 from database.ia_filterdb import (
     collection, second_collection,
@@ -67,7 +67,7 @@ async def open_miniapp(client, message):
     )
 
 
-# ─── web app data handler ─────────────────────────────────────────────────────
+# ─── web app data handler (legacy/fallback — not primary path) ─────────────────
 
 async def _is_web_app_data(_, __, message):
     return bool(getattr(message, 'web_app_data', None))
@@ -77,7 +77,7 @@ web_app_data_filter = filters.create(_is_web_app_data)
 
 @Client.on_message(filters.private & web_app_data_filter)
 async def handle_web_app_data(client, message):
-    """Handle tg.sendData() calls from miniapp."""
+    """Handle tg.sendData() calls from miniapp (fallback only)."""
     try:
         payload = json.loads(message.web_app_data.data)
     except Exception as exc:
@@ -90,22 +90,36 @@ async def handle_web_app_data(client, message):
     if action == 'get_file':
         file_id = payload.get('file_id', '')
         if not file_id:
-            await message.reply_text('❌ ɴᴏ ꜰɪʟᴇ ɪᴅ ʀᴇᴄᴇɪᴠᴇᴅ.')
+            await client.send_message(user_id, '❌ ɴᴏ ꜰɪʟᴇ ɪᴅ ʀᴇᴄᴇɪᴠᴇᴅ.')
             return
-        await _send_file_with_checks(client, message, user_id, file_id)
+        await send_file_with_checks(client, user_id, file_id)
 
 
-# ─── full file sending with all checks ────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+#  THE ONE UNIVERSAL FUNCTION — used by EVERY entry point:
+#    • /start miniapp_FILEID   (commands.py)
+#    • checksub#miniapp#FILEID (pm_filter.py)
+#    • handle_web_app_data     (above)
+#
+#  Sends directly to user_id via client — NO fake message objects.
+#  Works identically regardless of how the miniapp was opened.
+# ══════════════════════════════════════════════════════════════════════════════
 
-async def _send_file_with_checks(client, message, user_id: int, file_id: str):
+async def send_file_with_checks(client, user_id: int, file_id: str):
     """
-    Send a file to the user, running ALL the same checks as the /start handler:
-    force-sub, req-sub, premium access, file limit, verification.
+    Universal miniapp file-delivery. Runs all checks then sends to user_id.
+    Call this from any entry point — it always behaves the same way.
     """
-    logger.info(f'[MiniApp] _send_file_with_checks: user={user_id} file_id={file_id}')
-    m = message
+    logger.info(f'[MiniApp] send_file_with_checks: user={user_id} file_id={file_id}')
 
-    # ── 1. Force-subscribe check (global AUTH_CHANNELS + AUTH_REQ_CHANNELS) ──
+    async def _get_mention():
+        try:
+            u = await client.get_users(user_id)
+            return u.mention
+        except Exception:
+            return f'<a href="tg://user?id={user_id}">User</a>'
+
+    # ── 1. Force-subscribe check ──────────────────────────────────────────────
     if not await db.has_premium_access(user_id):
         try:
             btn = []
@@ -115,21 +129,23 @@ async def _send_file_with_checks(client, message, user_id: int, file_id: str):
                 btn += await is_req_subscribed(client, user_id, AUTH_REQ_CHANNELS)
 
             if btn:
-                logger.info(f'[MiniApp] user={user_id} failed force-sub check')
+                logger.info(f'[MiniApp] user={user_id} — force-sub required')
                 btn.append([
                     InlineKeyboardButton(
                         '♻️ ᴛʀʏ ᴀɢᴀɪɴ ♻️',
                         callback_data=f'checksub#miniapp#{file_id}',
                     )
                 ])
-                photo = random.choice(FSUB_PICS) if FSUB_PICS else \
-                    'https://graph.org/file/7478ff3eac37f4329c3d8.jpg'
+                photo   = random.choice(FSUB_PICS) if FSUB_PICS else \
+                          'https://graph.org/file/7478ff3eac37f4329c3d8.jpg'
+                mention = await _get_mention()
                 caption = (
-                    f'👋 ʜᴇʟʟᴏ {message.from_user.mention}\n\n'
+                    f'👋 ʜᴇʟʟᴏ {mention}\n\n'
                     '🛑 ʏᴏᴜ ᴍᴜsᴛ ᴊᴏɪɴ ᴛʜᴇ ʀᴇǫᴜɪʀᴇᴅ ᴄʜᴀɴɴᴇʟs ᴛᴏ ᴄᴏɴᴛɪɴᴜᴇ.\n'
                     '👉 ᴊᴏɪɴ ᴀʟʟ ᴛʜᴇ ʙᴇʟᴏᴡ ᴄʜᴀɴɴᴇʟs ᴀɴᴅ ᴛʀʏ ᴀɢᴀɪɴ.'
                 )
-                await message.reply_photo(
+                await client.send_photo(
+                    chat_id=user_id,
                     photo=photo,
                     caption=caption,
                     reply_markup=InlineKeyboardMarkup(btn),
@@ -137,21 +153,24 @@ async def _send_file_with_checks(client, message, user_id: int, file_id: str):
                 )
                 return
         except Exception as e:
-            logger.error(f'MiniApp Force Sub Error: {e}')
+            logger.error(f'[MiniApp] Force-sub check error: {e}')
 
-    # ── 2. Fetch file from DB using the actual file _id ───────────────────────
+    # ── 2. Fetch file from DB ─────────────────────────────────────────────────
     file_doc = await get_file_details(file_id)
     if not file_doc:
-        logger.warning(f'[MiniApp] user={user_id} file_id={file_id} NOT FOUND in DB')
-        await message.reply_text('<b>⚠️ ᴀʟʟ ꜰɪʟᴇs ɴᴏᴛ ꜰᴏᴜɴᴅ ⚠️</b>',
-                                 parse_mode=enums.ParseMode.HTML)
+        logger.warning(f'[MiniApp] user={user_id} file_id={file_id} — NOT FOUND in DB')
+        await client.send_message(
+            user_id,
+            '<b>⚠️ ꜰɪʟᴇ ɴᴏᴛ ꜰᴏᴜɴᴅ ⚠️</b>',
+            parse_mode=enums.ParseMode.HTML,
+        )
         return
-    logger.info(f'[MiniApp] user={user_id} file_id={file_id} found: {file_doc.get("file_name", "")}')
+    logger.info(f'[MiniApp] user={user_id} — found: {file_doc.get("file_name", "")}')
 
     fname    = file_doc.get('file_name', '')
     fcaption = file_doc.get('caption', '')
 
-    # Use grp_id = 0 → returns default settings (miniapp has no group context)
+    # grp_id=0 → global/default settings (miniapp has no group context)
     grp_id   = 0
     settings = await get_settings(grp_id)
 
@@ -165,55 +184,50 @@ async def _send_file_with_checks(client, message, user_id: int, file_id: str):
             user_id, settings.get('third_verify_time', THREE_VERIFY_GAP)
         )
 
-        # ── 3a. File limit check ──────────────────────────────────────────────
         if IS_FILE_LIMIT and FILES_LIMIT > 0:
             current_file_count = silicondb.silicon_file_limit(user_id)
 
             if current_file_count >= FILES_LIMIT:
-                # Limit exceeded — show message and check if verification needed
-                await message.reply_text(
+                await client.send_message(
+                    user_id,
                     f'<b>⚠️ ʏᴏᴜ ʜᴀᴠᴇ ʀᴇᴀᴄʜᴇᴅ ʏᴏᴜʀ ꜰʀᴇᴇ ꜰɪʟᴇ ʟɪᴍɪᴛ '
                     f'({current_file_count}/{FILES_LIMIT}).\n\n'
                     'ᴘʟᴇᴀsᴇ ᴠᴇʀɪꜰʏ ᴛᴏ ʀᴇsᴇᴛ ʏᴏᴜʀ ʟɪᴍɪᴛ ᴏʀ ᴜᴘɢʀᴀᴅᴇ ᴛᴏ ᴘʀᴇᴍɪᴜᴍ.</b>',
                     parse_mode=enums.ParseMode.HTML,
                 )
-                # Fall through to verification check below
+                # Fall through to verification check so user can verify to reset
             else:
                 silicondb.increment_silicon_limit(user_id)
                 current_file_count += 1
 
-                # ── 3b. Verification check (inside limit OK block) ────────────
                 if settings.get('is_verify', IS_VERIFY) and \
                         (not user_verified or is_second_shortener or is_third_shortener):
                     await _send_verify_prompt(
-                        client, message, user_id, file_id, grp_id,
+                        client, user_id, file_id, grp_id,
                         settings, is_second_shortener, is_third_shortener,
                     )
                     return
 
-                # All checks passed inside limit block — send file
-                await _do_send_file(
-                    client, message, user_id, file_id, file_doc,
-                    settings, current_file_count,
-                )
+                await _do_send_file(client, user_id, file_id, file_doc, settings, current_file_count)
                 return
 
-        # ── 3c. Verification check (outside file-limit block) ─────────────────
+        # Verification check when no file-limit or limit exceeded
         if settings.get('is_verify', IS_VERIFY) and \
                 (not user_verified or is_second_shortener or is_third_shortener):
             await _send_verify_prompt(
-                client, message, user_id, file_id, grp_id,
+                client, user_id, file_id, grp_id,
                 settings, is_second_shortener, is_third_shortener,
             )
             return
 
-    # ── 4. All checks passed (or premium user) — send file ────────────────────
-    await _do_send_file(client, message, user_id, file_id, file_doc, settings)
+    # ── 4. All checks passed (or premium user) ────────────────────────────────
+    await _do_send_file(client, user_id, file_id, file_doc, settings)
 
 
-async def _send_verify_prompt(client, message, user_id, file_id, grp_id,
-                               settings, is_second_shortener, is_third_shortener):
-    """Send verification link prompt to user."""
+async def _send_verify_prompt(client, user_id: int, file_id: str, grp_id: int,
+                               settings: dict, is_second_shortener: bool,
+                               is_third_shortener: bool):
+    """Send verification prompt directly to user_id."""
     verify_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=7))
     await db.create_verify_id(user_id, verify_id)
     temp.CHAT[user_id] = grp_id
@@ -238,24 +252,29 @@ async def _send_verify_prompt(client, message, user_id, file_id, grp_id,
         else (script.SECOND_VERIFICATION_TEXT if is_second_shortener
               else script.VERIFICATION_TEXT)
     )
-    d = await message.reply_text(
-        text=msg.format(message.from_user.mention, get_status()),
-        protect_content=False,
+    try:
+        u       = await client.get_users(user_id)
+        mention = u.mention
+    except Exception:
+        mention = f'<a href="tg://user?id={user_id}">User</a>'
+
+    d = await client.send_message(
+        chat_id=user_id,
+        text=msg.format(mention, get_status()),
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode=enums.ParseMode.HTML,
     )
     await asyncio.sleep(300)
     try:
         await d.delete()
-        await message.delete()
     except Exception:
         pass
 
 
-async def _do_send_file(client, message, user_id: int, file_id: str,
+async def _do_send_file(client, user_id: int, file_id: str,
                         file_doc: dict, settings: dict,
                         current_file_count: int = None):
-    """Send the file via send_cached_media (same method as the main handler)."""
+    """Send the file directly to user_id. No message object. No side-effects."""
     fname    = file_doc.get('file_name', '')
     fcaption = file_doc.get('caption', '')
 
@@ -278,39 +297,43 @@ async def _do_send_file(client, message, user_id: int, file_id: str,
             + file_limit_info
         )
 
-    btn = [[
-        InlineKeyboardButton('✛ ᴡᴀᴛᴄʜ & ᴅᴏᴡɴʟᴏᴀᴅ ✛', callback_data=f'stream#{file_id}')
-    ]]
+    btn = [[InlineKeyboardButton('✛ ᴡᴀᴛᴄʜ & ᴅᴏᴡɴʟᴏᴀᴅ ✛', callback_data=f'stream#{file_id}')]]
 
     try:
-        logger.info(f'[MiniApp] send_cached_media: user={user_id} file_id={file_id}')
+        logger.info(f'[MiniApp] send_cached_media → user={user_id}')
         toDel = await client.send_cached_media(
             chat_id=user_id,
             file_id=file_id,
             caption=f_caption,
             reply_markup=InlineKeyboardMarkup(btn),
         )
-        logger.info(f'[MiniApp] send_cached_media SUCCESS: user={user_id} file_id={file_id}')
+        logger.info(f'[MiniApp] send_cached_media SUCCESS: user={user_id}')
     except FloodWait as fw:
+        logger.warning(f'[MiniApp] FloodWait {fw.value}s for user={user_id}')
         await asyncio.sleep(fw.value)
-        return await _do_send_file(
-            client, message, user_id, file_id, file_doc, settings, current_file_count
-        )
+        return await _do_send_file(client, user_id, file_id, file_doc, settings, current_file_count)
+    except (UserIsBlocked, InputUserDeactivated) as e:
+        logger.warning(f'[MiniApp] User unreachable user={user_id}: {e}')
+        return
     except Exception as exc:
-        logger.error(f'send_cached_media failed in miniapp: {exc}')
-        await message.reply_text(
-            '❌ ᴄᴏᴜʟᴅ ɴᴏᴛ sᴇɴᴅ ᴛʜᴇ ꜰɪʟᴇ. ᴘʟᴇᴀsᴇ sᴇᴀʀᴄʜ ɪɴ ᴛʜᴇ ʙᴏᴛ ᴅɪʀᴇᴄᴛʟʏ.',
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton(
-                    '🔍 Search in Bot',
-                    switch_inline_query_current_chat=(fname or fcaption)[:40],
-                )
-            ]]),
-        )
+        logger.error(f'[MiniApp] send_cached_media FAILED user={user_id}: {exc}')
+        try:
+            await client.send_message(
+                user_id,
+                '❌ ᴄᴏᴜʟᴅ ɴᴏᴛ sᴇɴᴅ ᴛʜᴇ ꜰɪʟᴇ. ᴘʟᴇᴀsᴇ sᴇᴀʀᴄʜ ɪɴ ᴛʜᴇ ʙᴏᴛ ᴅɪʀᴇᴄᴛʟʏ.',
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        '🔍 Search in Bot',
+                        switch_inline_query_current_chat=(fname or fcaption)[:40],
+                    )
+                ]]),
+            )
+        except Exception:
+            pass
         return
 
     time_text = (
-        f'{FILE_AUTO_DEL_TIMER / 60} ᴍɪɴᴜᴛᴇs'
+        f'{FILE_AUTO_DEL_TIMER / 60:.0f} ᴍɪɴᴜᴛᴇs'
         if FILE_AUTO_DEL_TIMER >= 60
         else f'{FILE_AUTO_DEL_TIMER} sᴇᴄᴏɴᴅs'
     )
@@ -319,16 +342,26 @@ async def _do_send_file(client, message, user_id: int, file_id: str,
     afterDelCap = (f'<b>ʏᴏᴜʀ ғɪʟᴇ ɪs ᴅᴇʟᴇᴛᴇᴅ ᴀғᴛᴇʀ {time_text} '
                    f'ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ᴠɪᴏʟᴀᴛɪᴏɴs!</b>')
 
-    replyed = await message.reply(delCap, reply_to_message_id=toDel.id)
+    try:
+        replyed = await client.send_message(
+            chat_id=user_id,
+            text=delCap,
+            reply_to_message_id=toDel.id,
+            parse_mode=enums.ParseMode.HTML,
+        )
+    except Exception:
+        replyed = None
+
     await asyncio.sleep(FILE_AUTO_DEL_TIMER)
     try:
         await toDel.delete()
     except Exception:
         pass
-    try:
-        await replyed.edit(afterDelCap)
-    except Exception:
-        pass
+    if replyed:
+        try:
+            await replyed.edit(afterDelCap)
+        except Exception:
+            pass
 
 
-logger.info('✅ MiniApp plugin v4 loaded (full checks: force-sub, limit, verify, premium)')
+logger.info('✅ MiniApp plugin loaded — universal send_file_with_checks')
