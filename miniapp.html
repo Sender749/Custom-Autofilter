@@ -339,8 +339,8 @@ let searchState = {
 window.addEventListener('load', async () => {
   buildChips();
   setupInfiniteScroll();
-  // Hide loader after max 5s no matter what (prevents stuck loading screen)
-  const loaderTimeout = setTimeout(() => hideLoader(), 5000);
+  // Guaranteed loader hide after 6s no matter what
+  const loaderTimeout = setTimeout(() => hideLoader(), 6000);
   try {
     await loadTab('movies');
   } catch(e) {
@@ -352,8 +352,10 @@ window.addEventListener('load', async () => {
 
 function hideLoader() {
   const l = document.getElementById('loader');
+  if (!l) return;
+  if (l.classList.contains('hidden')) return;
   l.classList.add('hidden');
-  setTimeout(() => l.remove(), 500);
+  setTimeout(() => { try { l.remove(); } catch(e){} }, 500);
 }
 
 async function apiFetch(path) {
@@ -602,9 +604,9 @@ async function runSearch(query, displayLabel, yearFilter) {
 
   const label = displayLabel || ('"' + query + '"');
   container.innerHTML =
-    '<div id="searchHeader" style="font-family:'Bebas Neue',sans-serif;font-size:20px;letter-spacing:1px;color:var(--text);margin-bottom:10px">' +
-    'Results for ' + esc(label) +
-    ' <small id="searchCount" style="font-size:12px;color:var(--muted);font-family:'DM Sans',sans-serif">' + results.length + ' found</small></div>';
+    "<div id='searchHeader' style='font-family:Bebas Neue,sans-serif;font-size:20px;letter-spacing:1px;color:var(--text);margin-bottom:10px'>" +
+    "Results for " + esc(label) +
+    " <small id='searchCount' style='font-size:12px;color:var(--muted);font-family:DM Sans,sans-serif'>" + results.length + " found</small></div>";
 
   const grid = document.createElement('div');
   grid.className = 'grid';
@@ -696,7 +698,7 @@ async function enrichCardsWithPosters(items) {
       }
       // If no poster found: card remains as text placeholder — no broken image shown
     } catch(e) {}
-    await new Promise(r => setTimeout(r, 80));
+    await new Promise(r => setTimeout(r, 50));
   }
 }
 
