@@ -39,13 +39,6 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
 #searchInput::placeholder{color:var(--muted)}
 .clear-btn{position:absolute;right:10px;top:50%;transform:translateY(-50%);
   background:none;border:none;color:var(--muted);font-size:15px;cursor:pointer;display:none;}
-.chips-wrap{display:flex;gap:7px;overflow-x:auto;scrollbar-width:none;padding:0 0 10px;-webkit-overflow-scrolling:touch;}
-.chips-wrap::-webkit-scrollbar{display:none}
-.chip{flex-shrink:0;padding:5px 12px;border-radius:99px;background:var(--card2);border:1px solid var(--border);
-  color:var(--text2);font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap;
-  transition:background .15s,border-color .15s,color .15s;user-select:none;}
-.chip.active{background:rgba(232,160,32,.2);border-color:rgba(232,160,32,.5);color:var(--accent);}
-.chip:active{transform:scale(.96)}
 .tabs{flex-shrink:0;display:flex;border-bottom:1px solid var(--border);
   background:var(--surface);overflow-x:auto;scrollbar-width:none;}
 .tabs::-webkit-scrollbar{display:none}
@@ -230,7 +223,6 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
       <input type="text" id="searchInput" placeholder="Search movies, series..."/>
       <button class="clear-btn" id="clearBtn" onclick="clearSearch()">&#10005;</button>
     </div>
-    <div class="chips-wrap" id="chipsWrap"></div>
   </div>
 
   <div class="tabs">
@@ -299,14 +291,6 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
 const API_BASE     = "https://precious-mab-filetokensender-fdc78bed.koyeb.app";
 const BOT_USERNAME = "Navex_MoviesHub_Bot";
 
-// ── Quick chips: query = exact word to search in DB ──────────────────────────
-const QUICK_CHIPS = [
-  { label: "Latest 2026", query: "2026",    yearFilter: "2026" },
-  { label: "Punjabi",     query: "punjabi", yearFilter: null   },
-  { label: "Adult",       query: "adult",   yearFilter: null   },
-  { label: "Hentai",      query: "hentais",  yearFilter: null   },
-];
-
 const tg = window.Telegram.WebApp;
 tg.ready();
 tg.expand();
@@ -314,8 +298,6 @@ tg.expand();
 let currentTab     = "movies";
 let viewModes      = { movies: "grid", series: "grid" };
 let searchDebounce = null;
-let activeChip     = null;
-let preChipTab     = "movies";
 
 // Tab state — page counter only, backend handles dedup via shuffled deck
 let tabState = {
@@ -331,7 +313,6 @@ let searchState = {
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 window.addEventListener("load", async () => {
-  buildChips();
   setupInfiniteScroll();
   const loaderTO = setTimeout(hideLoader, 7000); // force-hide after 7s max
   try { await loadTab("movies"); } catch(e) { console.error("loadTab error:", e); }
@@ -361,43 +342,6 @@ async function apiFetch(path) {
   } catch(e) { return null; }
 }
 
-// ── Chips ─────────────────────────────────────────────────────────────────────
-function buildChips() {
-  const wrap = document.getElementById("chipsWrap");
-  QUICK_CHIPS.forEach(chip => {
-    const el = document.createElement("div");
-    el.className = "chip";
-    el.textContent = chip.label;
-    el.onclick = () => toggleChip(chip, el);
-    wrap.appendChild(el);
-  });
-}
-
-async function toggleChip(chip, el) {
-  if (activeChip === chip.label) {
-    // Deactivate
-    activeChip = null;
-    el.classList.remove("active");
-    document.getElementById("searchInput").value = "";
-    document.getElementById("clearBtn").style.display = "none";
-    document.getElementById("searchTab").style.display = "none";
-    switchTab(preChipTab, document.querySelector('[data-tab="' + preChipTab + '"]'));
-    return;
-  }
-  document.querySelectorAll(".chip").forEach(c => c.classList.remove("active"));
-  el.classList.add("active");
-  activeChip = chip.label;
-  preChipTab = currentTab !== "search" ? currentTab : preChipTab;
-  tg.HapticFeedback.impactOccurred("light");
-
-  document.getElementById("searchInput").value = chip.label;
-  document.getElementById("clearBtn").style.display = "block";
-
-  // Run search with the raw query word — backend searches ALL DB files containing this word
-  await runSearch(chip.query, '"' + chip.label + '"', chip.yearFilter || null);
-  showSearchTab();
-}
-
 // ── Tab loading ───────────────────────────────────────────────────────────────
 async function loadTab(tab, reset) {
   const st = tabState[tab];
@@ -414,8 +358,9 @@ async function loadTab(tab, reset) {
 
   let data = null;
   try {
-    // ts param on page 0 = force server to reshuffle the deck
-    const ts = (reset || st.page === 0) ? ("&ts=" + Date.now()) : "";
+    // ts param ONLY on explicit refresh (reset=true) — this triggers server reshuffle
+    // Never send ts on normal page=0 load (would cause deck to reshuffle mid-scroll)
+    const ts = reset ? ("&ts=" + Date.now()) : "";
     data = await apiFetch("/miniapp/browse?type=" + tab + "&page=" + st.page + "&limit=24" + ts);
   } catch(e) { data = null; }
 
@@ -486,8 +431,12 @@ async function refreshTab(tab) {
 function setupInfiniteScroll() {
   ["movies", "series"].forEach(tab => {
     const obs = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting && currentTab === tab) loadMoreTab(tab);
-    }, { rootMargin: "300px" });
+      // Only load more when: correct tab is active AND initial load is complete
+      // This prevents race condition where sentinel fires before page=0 finishes
+      if (entries[0].isIntersecting && currentTab === tab && tabState[tab].loaded) {
+        loadMoreTab(tab);
+      }
+    }, { rootMargin: "200px" });
     obs.observe(document.getElementById(tab + "Sentinel"));
   });
   const searchObs = new IntersectionObserver(entries => {
@@ -810,8 +759,9 @@ function requestFile(btn) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ file_id: fileId, initData: tg.initData || "" }),
   }).catch(() => {});
+  // openTelegramLink navigates to bot DM — miniapp stays open/minimized in background
+  // We intentionally do NOT close the miniapp so user can return to it
   try { tg.openTelegramLink("https://t.me/" + BOT_USERNAME); } catch(e) {}
-  setTimeout(() => { try { tg.close(); } catch(e) {} }, 400);
 }
 
 function switchSeason(sNum, tabEl) {
@@ -841,8 +791,6 @@ document.getElementById("detailPanel").addEventListener("touchend", e => {
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 function switchTab(tab, el) {
   if (tab !== "search") {
-    document.querySelectorAll(".chip").forEach(c => c.classList.remove("active"));
-    activeChip = null;
     document.getElementById("searchTab").style.display = "none";
   }
   currentTab = tab;
@@ -859,14 +807,11 @@ document.getElementById("searchInput").addEventListener("input", function() {
   const q = this.value.trim();
   document.getElementById("clearBtn").style.display = q ? "block" : "none";
   if (!q) {
-    document.querySelectorAll(".chip").forEach(c => c.classList.remove("active"));
-    activeChip = null;
     document.getElementById("searchTab").style.display = "none";
-    switchTab(preChipTab || "movies", document.querySelector('[data-tab="' + (preChipTab || "movies") + '"]'));
+    switchTab("movies", document.querySelector('[data-tab="movies"]'));
     return;
   }
   if (currentTab !== "search") {
-    preChipTab = currentTab !== "search" ? currentTab : preChipTab;
     showSearchTab();
   }
   clearTimeout(searchDebounce);
@@ -876,8 +821,6 @@ document.getElementById("searchInput").addEventListener("input", function() {
 function clearSearch() {
   document.getElementById("searchInput").value = "";
   document.getElementById("clearBtn").style.display = "none";
-  document.querySelectorAll(".chip").forEach(c => c.classList.remove("active"));
-  activeChip = null;
   document.getElementById("searchTab").style.display = "none";
   switchTab("movies", document.querySelector('[data-tab="movies"]'));
 }
