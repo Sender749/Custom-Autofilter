@@ -99,7 +99,7 @@ LANDSCAPE_POSTER = bool(environ.get('LANDSCAPE_POSTER', True)) # Shows landscape
 
 AUTO_FILTER = is_enabled('AUTO_FILTER', True)
 FILE_AUTO_DEL_TIMER = int(environ.get('FILE_AUTO_DEL_TIMER', '43200'))
-PORT = os.environ.get('PORT', '5000')
+PORT = int(os.environ.get('PORT', '5000'))
 MAX_BTN = int(environ.get('MAX_BTN', '10'))
 AUTO_DELETE = is_enabled('AUTO_DELETE', True)
 DELETE_TIME = int(environ.get('DELETE_TIME', 300))
@@ -119,7 +119,7 @@ QUALITIES = [ "240p", "360p", "480p", "540p", "720p", "960p", "1080p", "1440p"]
 SEASONS = [("sᴇᴀsᴏɴ 𝟷", "s01"), ("sᴇᴀsᴏɴ 𝟸", "s02"), ("sᴇᴀsᴏɴ 𝟹", "s03"), ("sᴇᴀsᴏɴ 𝟺", "s04"), ("sᴇᴀsᴏɴ 𝟻", "s05"), ("sᴇᴀsᴏɴ 𝟼", "s06"), ("sᴇᴀsᴏɴ 𝟽", "s07"), ("sᴇᴀsᴏɴ 𝟾", "s08"), ("sᴇᴀsᴏɴ 𝟿", "s09"), ("sᴇᴀsᴏɴ 𝟷𝟶", "s10")]
 
 # Stream Settings 
-MINI_APP_URL = "https://precious-mab-filetokensender-fdc78bed.koyeb.app/miniapp"
+MINI_APP_URL = os.environ.get('MINI_APP_URL', 'https://precious-mab-filetokensender-fdc78bed.app/miniapp')
 IS_PREMIUM_STREAM = is_enabled('IS_PREMIUM_STREAM', False) # True To Allow Stream For Premium User Only
 BIN_CHANNEL = environ.get("BIN_CHANNEL", "-1002262450769") # Channel Where Files sent For stream
 if len(BIN_CHANNEL) == 0:
