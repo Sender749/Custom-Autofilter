@@ -312,6 +312,16 @@ let searchState = {
 };
 
 // ── Init ─────────────────────────────────────────────────────────────────────
+// Client-side Fisher-Yates shuffle — ensures every open/refresh shows a different order
+// even when the server deck cache hasn't expired yet
+function clientShuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 window.addEventListener("load", async () => {
   setupInfiniteScroll();
   const loaderTO = setTimeout(hideLoader, 7000); // force-hide after 7s max
@@ -358,9 +368,9 @@ async function loadTab(tab, reset) {
 
   let data = null;
   try {
-    // ts param ONLY on explicit refresh (reset=true) — this triggers server reshuffle
-    // Never send ts on normal page=0 load (would cause deck to reshuffle mid-scroll)
-    const ts = reset ? ("&ts=" + Date.now()) : "";
+    // Always send ts on page=0 (first load or refresh) — forces server to rebuild+reshuffle the deck
+    // This means every miniapp open AND every refresh gets a fresh shuffle from the server
+    const ts = (st.page === 0) ? ("&ts=" + Date.now()) : "";
     data = await apiFetch("/miniapp/browse?type=" + tab + "&page=" + st.page + "&limit=24" + ts);
   } catch(e) { data = null; }
 
@@ -368,12 +378,14 @@ async function loadTab(tab, reset) {
   grid.innerHTML = "";
 
   if (data && data.ok && data.results && data.results.length) {
+    // Client-side shuffle on top of server shuffle — guarantees a unique order every open
+    const results = clientShuffle(data.results.slice());
     st.hasMore = data.has_more !== false;
     st.loaded  = true;
-    st.totalSeen += data.results.length;
-    renderGrid(grid, data.results, viewModes[tab]);
+    st.totalSeen += results.length;
+    renderGrid(grid, results, viewModes[tab]);
     updateCount(tab, data.total || st.totalSeen, st.hasMore);
-    enrichCardsWithPosters(data.results);
+    enrichCardsWithPosters(results);
   } else if (data && data.ok) {
     st.hasMore = false; st.loaded = true;
     grid.innerHTML = emptyState("Nothing here yet", "Files will appear as they are added");
@@ -568,15 +580,18 @@ async function enrichCardsWithPosters(items) {
 function _applyPosterToCard(item) {
   const card = document.querySelector('[data-file-id="' + item.id + '"]');
   if (!card || !item.poster) return;
+  // If a real visible poster img already exists, skip — don't double-insert
+  const existingImg = card.querySelector("img.card-poster, img.list-poster");
+  if (existingImg && existingImg.style.display !== "none") return;
   const noPost = card.querySelector(".card-no-poster,.list-no-poster");
-  if (!noPost) return; // already has img
+  if (!noPost || noPost.style.display === "none") return; // placeholder already hidden
   const isListMode = noPost.classList.contains("list-no-poster");
   const img = document.createElement("img");
   img.className = isListMode ? "list-poster" : "card-poster";
   img.src = item.poster;
   img.alt = esc(item.name || item.group_title);
   img.loading = "lazy";
-  img.onerror = function() { this.style.display="none"; noPost.style.display="flex"; };
+  img.onerror = function() { this.style.display = "none"; noPost.style.display = "flex"; };
   noPost.parentNode.insertBefore(img, noPost);
   noPost.style.display = "none";
   if (item.rating) {
@@ -754,14 +769,19 @@ function requestFile(btn) {
   tg.HapticFeedback.impactOccurred("medium");
   btn.style.opacity = "0.6";
   btn.style.pointerEvents = "none";
+  // Fire the send_file request to server (checks happen server-side: limit, premium, force-sub, etc.)
   fetch(API_BASE + "/miniapp/send_file", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ file_id: fileId, initData: tg.initData || "" }),
   }).catch(() => {});
-  // openTelegramLink navigates to bot DM — miniapp stays open/minimized in background
-  // We intentionally do NOT close the miniapp so user can return to it
-  try { tg.openTelegramLink("https://t.me/" + BOT_USERNAME); } catch(e) {}
+  // ALWAYS minimize miniapp first, then open bot DM so user sees the file/checks in chat
+  // tg.close() minimizes the miniapp back to the chat — it does NOT destroy it
+  try { tg.close(); } catch(e) {}
+  // Small delay so close animation starts before the link opens
+  setTimeout(() => {
+    try { tg.openTelegramLink("https://t.me/" + BOT_USERNAME); } catch(e) {}
+  }, 150);
 }
 
 function switchSeason(sNum, tabEl) {
