@@ -764,40 +764,20 @@ function requestFile(btn) {
   btn.style.opacity = "0.6";
   btn.style.pointerEvents = "none";
 
-  // --- Strategy 1: tg.sendData() (keyboard WebApp buttons: /miniapp cmd, inline buttons)
-  // This is guaranteed to deliver data to the bot before the miniapp closes.
-  // tg.sendData() also automatically closes the miniapp and redirects to bot DM.
-  try {
-    tg.sendData(JSON.stringify({ action: "get_file", file_id: fileId }));
-    // sendData closes the miniapp automatically — no need to call tg.close()
-    return;
-  } catch (e) {
-    // sendData throws if miniapp was opened via menu button or direct link — fall through to fetch
-  }
-
-  // --- Strategy 2: fetch + close (menu button / BotFather configure button context)
-  // Wait for the server to receive the request before closing the miniapp
-  // to avoid the race condition where tg.close() aborts the in-flight fetch.
-  let _closed = false;
-  const doCloseAndRedirect = () => {
-    if (_closed) return;
-    _closed = true;
-    try { tg.close(); } catch(e) {}
-    setTimeout(() => {
-      try { tg.openTelegramLink("https://t.me/" + BOT_USERNAME); } catch(e) {}
-    }, 150);
-  };
-
-  fetch(API_BASE + "/miniapp/send_file", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ file_id: fileId, initData: tg.initData || "" }),
-  })
-    .then(() => doCloseAndRedirect())
-    .catch(() => doCloseAndRedirect());
-
-  // Safety fallback: if fetch hangs for >3s, close anyway
-  setTimeout(doCloseAndRedirect, 3000);
+  // Universal approach: close miniapp immediately, then open bot DM with deeplink.
+  // Bot's /start handler receives ?start=miniapp_FILEID and calls send_file_with_checks.
+  // This works identically regardless of how the miniapp was opened
+  // (menu button, /miniapp command, configure button, direct link).
+  // No fetch. No sendData. No initData needed.
+  tg.close();
+  setTimeout(() => {
+    try {
+      tg.openTelegramLink("https://t.me/" + BOT_USERNAME + "?start=miniapp_" + encodeURIComponent(fileId));
+    } catch(e) {
+      // Fallback: open bot DM without deeplink if Telegram API fails
+      try { tg.openTelegramLink("https://t.me/" + BOT_USERNAME); } catch(e2) {}
+    }
+  }, 100);
 }
 
 function switchSeason(sNum, tabEl) {
