@@ -730,8 +730,9 @@ async def miniapp_search(request):
     if not DB_AVAILABLE:
         return json_resp({'ok': False, 'error': 'DB not available'}, 500)
 
-    q     = request.rel_url.query.get('q', '').strip()
-    fuzzy = request.rel_url.query.get('fuzzy', '0') in ('1', 'true', 'yes')
+    q           = request.rel_url.query.get('q', '').strip()
+    fuzzy       = request.rel_url.query.get('fuzzy', '0') in ('1', 'true', 'yes')
+    year_filter = request.rel_url.query.get('year_filter', '').strip()
     if not q:
         return json_resp({'ok': False, 'error': "Missing 'q'"}, 400)
 
@@ -755,7 +756,12 @@ async def miniapp_search(request):
 
     groups = _group_docs(files)
     # Sort newest first for search results too
-    sorted_groups = sorted(groups.values(), key=lambda g: g['rep']['_id'], reverse=True)[:40]
+    sorted_groups = sorted(groups.values(), key=lambda g: g['rep']['_id'], reverse=True)
+    # Apply strict year filter if requested (e.g. chip 'Latest 2026')
+    if year_filter:
+        sorted_groups = [g for g in sorted_groups if g.get('year','') == year_filter or
+                         extract_year(g['rep'].get('caption') or g['rep'].get('file_name','')) == year_filter]
+    sorted_groups = sorted_groups[:200]
 
     async def make_card(grp):
         try:
@@ -920,6 +926,23 @@ def _validate_init_data(init_data: str, bot_token: str) -> dict | None:
         return None
 
 
+async def miniapp_poster(request):
+    """
+    GET /miniapp/poster?title=<title>&year=<year>
+    Returns TMDB/IMDB poster metadata for a title (used by frontend card enrichment).
+    """
+    if request.method == 'OPTIONS':
+        return cors_preflight()
+    title = request.rel_url.query.get('title', '').strip()
+    year  = request.rel_url.query.get('year', '').strip()
+    if not title:
+        return json_resp({'ok': False, 'error': "Missing 'title'"}, 400)
+    meta = await _get_meta(title, year)
+    if meta and meta.get('poster'):
+        return json_resp({'ok': True, 'meta': meta})
+    return json_resp({'ok': False, 'meta': None})
+
+
 async def miniapp_send_file(request: Request):
     if request.method == 'OPTIONS':
         return cors_preflight()
@@ -1003,4 +1026,6 @@ routes = [
     web.route('OPTIONS', '/miniapp/search',        miniapp_search),
     web.route('OPTIONS', '/miniapp/group_details', miniapp_group_details),
     web.route('OPTIONS', '/miniapp/send_file',     miniapp_send_file),
+    web.route('GET',     '/miniapp/poster',          miniapp_poster),
+    web.route('OPTIONS', '/miniapp/poster',          miniapp_poster),
 ]
