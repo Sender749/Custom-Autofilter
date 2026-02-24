@@ -348,7 +348,7 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
 <div id="toast"></div>
 
 <script>
-const API_BASE     = "https://precious-mab-filetokensender-fdc78bed.koyeb.app";
+const API_BASE     = "https://precious-mab-filetokensender-fdc78bed.koyeb.app/miniapp";
 const BOT_USERNAME = "Navex_MoviesHub_Bot";
 
 // ─── ADMIN: configure quick-search chips here ────────────────────────────────
@@ -481,7 +481,7 @@ async function loadTab(tab, reset) {
 
   const ts   = reset ? ('&ts=' + Date.now()) : '';
   st.loading = true;
-  const data = await apiFetch('/miniapp/browse?type=' + tab + '&page=' + st.page + '&limit=24' + ts);
+  const data = await apiFetch('/browse?type=' + tab + '&page=' + st.page + '&limit=24' + ts);
   st.loading = false;
 
   grid.innerHTML = '';
@@ -510,7 +510,7 @@ async function loadMoreTab(tab) {
   const spinner = document.getElementById(tab + 'Spinner');
   spinner.classList.add('visible');
   st.page++;
-  const data = await apiFetch('/miniapp/browse?type=' + tab + '&page=' + st.page + '&limit=24');
+  const data = await apiFetch('/browse?type=' + tab + '&page=' + st.page + '&limit=24');
   if (data && data.ok && data.results && data.results.length) {
     const grid = document.getElementById(tab + 'Grid');
     st.files   = [...st.files, ...data.results];
