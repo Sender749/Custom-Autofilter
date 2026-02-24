@@ -315,16 +315,47 @@ async def miniapp_health(request):
     return json_resp({'ok':True,'db':DB_AVAILABLE,'tmdb_key':bool(TMDB_API_KEY)})
 
 
+async def _enrich_deck_with_posters(deck: list):
+    """
+    Background task: walk through every card in the deck that still has no poster
+    and fetch TMDB meta for it, then update the card in-place.
+    Rate-limited to avoid hammering TMDB API.
+    """
+    for card in deck:
+        if card.get('poster'):
+            continue
+        title = card.get('group_title') or card.get('name') or ''
+        year  = card.get('year') or ''
+        if not title:
+            continue
+        try:
+            meta = await _get_meta(title, year)
+            if meta and meta.get('poster'):
+                card['poster']   = meta['poster']
+                card['backdrop'] = meta.get('backdrop') or card.get('backdrop')
+                card['rating']   = meta.get('rating')   or card.get('rating')
+                card['name']     = meta.get('title')    or card['name']
+                card['year']     = meta.get('year')     or card['year']
+                card['genres']   = meta.get('genres')   or card.get('genres', [])
+        except Exception as exc:
+            logger.debug(f'_enrich_deck poster fetch failed for "{title}": {exc}')
+        # Small delay — be polite to TMDB, avoid rate-limit (40 req/10s allowed)
+        await asyncio.sleep(0.12)
+
+
 async def miniapp_browse(request):
     """
     GET /miniapp/browse?type=movies|series&page=0&limit=24&ts=<timestamp>
 
-    SHUFFLE logic:
+    SHUFFLE + POSTER logic:
     - Fetches ALL unique titles from DB for this type
-    - Shuffles them randomly and caches the shuffled deck for 10 minutes
-    - ts param (refresh button) rebuilds + reshuffles the deck immediately
-    - Pages through the full shuffled deck — no title ever repeats
-    - No artificial cap on total results
+    - Shuffles them randomly
+    - Enriches ALL cards server-side with TMDB posters (cached per-title for 1hr)
+      so the frontend always receives cards that already have posters — no more
+      lazy-fetch lottery where only the first ~24 TMDB-cached titles get images
+    - Full enriched deck is cached for 10 minutes
+    - ts param (refresh button OR every first open) always rebuilds the deck fresh
+    - Pages through the full enriched+shuffled deck — no title ever repeats
     """
     if request.method=='OPTIONS': return cors_preflight()
     if not DB_AVAILABLE: return json_resp({'ok':False,'error':'DB not available'},500)
@@ -337,25 +368,42 @@ async def miniapp_browse(request):
     except (ValueError,TypeError):
         page,limit,content_type,is_refresh=0,24,'movie',False
 
-    deck_key=f'_deck_{content_type}'
+    deck_key   = f'_deck_{content_type}'
+    # Separate flag: tracks whether background enrichment finished for this deck
+    warmed_key = f'_deck_warmed_{content_type}'
 
-    # Rebuild shuffled deck ONLY when:
-    #   - explicit refresh (ts param from refresh button), OR
-    #   - deck truly missing from cache (first ever load, or cache expired)
-    # Do NOT reshuffle on page==0 (that would cause duplicates when tab is
-    # revisited or when IntersectionObserver triggers loadMore before loadTab finishes)
-    existing_deck = _cache_get(_META_CACHE, deck_key, 600)
+    # Rebuild deck when:
+    #   - ts param sent (every first open AND every refresh button click), OR
+    #   - deck missing / expired from cache
+    existing_deck   = _cache_get(_META_CACHE, deck_key, 600)
+    deck_is_warmed  = _cache_get(_META_CACHE, warmed_key, 600)
+
     if is_refresh or existing_deck is None:
-        all_docs=await _run_sync(_sync_fetch_all_by_type,content_type)
+        all_docs = await _run_sync(_sync_fetch_all_by_type, content_type)
         random.shuffle(all_docs)
-        deck=[_doc_to_card(d) for d in all_docs]
-        _cache_set(_META_CACHE,deck_key,deck,600)
+        deck = [_doc_to_card(d) for d in all_docs]
+        _cache_set(_META_CACHE, deck_key, deck, 600)
+        _cache_set(_META_CACHE, warmed_key, False, 600)
+        deck_is_warmed = False
         logger.info(f'Browse deck rebuilt+shuffled: {content_type}, {len(deck)} titles')
     else:
-        deck=existing_deck
+        deck = existing_deck
 
-    start=page*limit; end=start+limit
-    results=deck[start:end]; has_more=end<len(deck)
+    # If this deck hasn't been fully poster-enriched yet, kick off background enrichment.
+    # It updates cards in-place inside the cached list, so subsequent page requests
+    # will progressively see more posters already populated.
+    if not deck_is_warmed:
+        async def _warm():
+            await _enrich_deck_with_posters(deck)
+            _cache_set(_META_CACHE, warmed_key, True, 600)
+            logger.info(f'Poster enrichment complete for deck: {content_type}')
+        asyncio.ensure_future(_warm())
+        _cache_set(_META_CACHE, warmed_key, True, 600)  # prevent double-launch
+
+    start   = page * limit
+    end     = start + limit
+    results = deck[start:end]
+    has_more = end < len(deck)
     return json_resp({'ok':True,'results':results,'count':len(results),'page':page,'total':len(deck),'has_more':has_more})
 
 
