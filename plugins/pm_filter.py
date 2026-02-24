@@ -720,11 +720,11 @@ async def cb_handler(client: Client, query: CallbackQuery):
                     show_alert=True
                 )
                 return
-            # For miniapp: all channels joined — send file via our miniapp handler
+            # For miniapp: all channels joined — send file via universal handler
             if kk == "miniapp":
-                from plugins.miniapp_plugin import _send_file_with_checks
+                from plugins.miniapp_plugin import send_file_with_checks
                 await query.message.delete()
-                await _send_file_with_checks(client, query.message, query.from_user.id, file_id)
+                await send_file_with_checks(client, query.from_user.id, file_id)
             else:
                 await query.answer(url=f"https://t.me/{temp.U_NAME}?start={kk}_{file_id}")
                 await query.message.delete()
