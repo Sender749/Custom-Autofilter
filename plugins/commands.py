@@ -76,6 +76,18 @@ async def start(client: Client, message):
         await auto_filter(client, message) 
         return
 
+    # ── miniapp deeplink: ?start=miniapp_FILEID ──────────────────────────────
+    # This is the single universal entry-point from the miniapp for ALL opening
+    # methods (menu button, /miniapp cmd, configure button, direct link).
+    # The miniapp closes and sends the user here; we call send_file_with_checks
+    # which is THE one function that handles force-sub, limit, verify, premium.
+    if data and data.startswith('miniapp_'):
+        file_id = data[len('miniapp_'):]
+        if file_id:
+            from plugins.miniapp_plugin import send_file_with_checks
+            await send_file_with_checks(client, message.from_user.id, file_id)
+        return
+
     if data and data.startswith('notcopy'):
         _, userid, verify_id, file_id = data.split("_", 3)
         user_id = int(userid)
