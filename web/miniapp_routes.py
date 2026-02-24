@@ -763,41 +763,44 @@ async def miniapp_search(request):
                          extract_year(g['rep'].get('caption') or g['rep'].get('file_name','')) == year_filter]
     sorted_groups = sorted_groups[:200]
 
-    async def make_card(grp):
+    # Return cards WITHOUT fetching TMDB meta — the frontend enriches posters lazily
+    # via /miniapp/poster endpoint (same as browse tab). This makes search fast and
+    # shows ALL results immediately; posters load in the background card-by-card.
+    def make_card_fast(grp):
         try:
             rep   = grp['rep']
             fname = rep.get('caption') or rep.get('file_name', '')
             title = clean_title(fname)
             year  = grp.get('year') or extract_year(fname)
-            ck    = title.lower() + '|' + year
-            meta  = _cache_get(_META_CACHE, ck, _META_CACHE_TTL)
-            if meta is None:
-                meta = await _get_meta(title, year)
-            tmdb_t = (meta or {}).get('type')
-            tmdb_g = (meta or {}).get('genres', [])
-            tmdb_oc = (meta or {}).get('origin_country', [])
-            tmdb_ol = (meta or {}).get('original_language', '')
-            ctype  = detect_content_type(fname, tmdb_type=tmdb_t, tmdb_genres=tmdb_g,
-                                         tmdb_origin_country=tmdb_oc,
-                                         tmdb_original_language=tmdb_ol)
+            # Check cache first — if already fetched, include poster/rating
+            ck   = title.lower() + '|' + year
+            meta = _cache_get(_META_CACHE, ck, _META_CACHE_TTL)
+            ctype = detect_content_type(
+                fname,
+                tmdb_type=(meta or {}).get('type'),
+                tmdb_genres=(meta or {}).get('genres', []),
+                tmdb_origin_country=(meta or {}).get('origin_country', []),
+                tmdb_original_language=(meta or {}).get('original_language', ''),
+            )
             return {
                 'group_title': title,
                 'id':          str(rep['_id']),
                 'name':        (meta or {}).get('title') or title,
                 'year':        (meta or {}).get('year') or year,
-                'poster':      (meta or {}).get('poster'),
-                'rating':      (meta or {}).get('rating'),
-                'genres':      (meta or {}).get('genres', []),
+                # Only include poster/rating if already cached — otherwise None
+                # so frontend enriches it lazily
+                'poster':      (meta or {}).get('poster') if meta else None,
+                'rating':      (meta or {}).get('rating') if meta else None,
+                'genres':      (meta or {}).get('genres', []) if meta else [],
                 'type':        ctype,
                 'file_count':  len(grp['files']),
             }
         except Exception as exc:
-            logger.error(f'make_card (search) error: {exc}')
+            logger.error(f'make_card_fast (search) error: {exc}')
             return None
 
-    cards = await asyncio.gather(*[make_card(g) for g in sorted_groups], return_exceptions=True)
-    results = [c for c in cards if isinstance(c, dict)]
-    return json_resp({'ok': True, 'results': results, 'total': total})
+    results = [c for c in (make_card_fast(g) for g in sorted_groups) if c is not None]
+    return json_resp({'ok': True, 'results': results, 'total': len(results)})
 
 
 async def miniapp_group_details(request):
