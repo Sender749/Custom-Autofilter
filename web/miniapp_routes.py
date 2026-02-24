@@ -339,15 +339,20 @@ async def miniapp_browse(request):
 
     deck_key=f'_deck_{content_type}'
 
-    # Rebuild shuffled deck on refresh OR page 0 OR cache miss
-    if is_refresh or page==0 or _cache_get(_META_CACHE,deck_key,600) is None:
+    # Rebuild shuffled deck ONLY when:
+    #   - explicit refresh (ts param from refresh button), OR
+    #   - deck truly missing from cache (first ever load, or cache expired)
+    # Do NOT reshuffle on page==0 (that would cause duplicates when tab is
+    # revisited or when IntersectionObserver triggers loadMore before loadTab finishes)
+    existing_deck = _cache_get(_META_CACHE, deck_key, 600)
+    if is_refresh or existing_deck is None:
         all_docs=await _run_sync(_sync_fetch_all_by_type,content_type)
         random.shuffle(all_docs)
         deck=[_doc_to_card(d) for d in all_docs]
         _cache_set(_META_CACHE,deck_key,deck,600)
         logger.info(f'Browse deck rebuilt+shuffled: {content_type}, {len(deck)} titles')
     else:
-        deck=_cache_get(_META_CACHE,deck_key,600) or []
+        deck=existing_deck
 
     start=page*limit; end=start+limit
     results=deck[start:end]; has_more=end<len(deck)
