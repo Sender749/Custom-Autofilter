@@ -544,22 +544,8 @@ async def miniapp_send_file(request):
         return json_resp({'ok':False,'error':'server_error'},500)
     if not file_doc: return json_resp({'ok':False,'error':'file_not_found'},404)
     try:
-        from plugins.miniapp_plugin import _send_file_with_checks
-        class _FakeUser:
-            id=user_id; mention=f'<a href="tg://user?id={user_id}">User</a>'
-        class _FakeMsg:
-            from_user=_FakeUser()
-            async def reply_text(self,text,**kw):
-                try: await bot.send_message(chat_id=user_id,text=text,**{k:v for k,v in kw.items() if k!='protect_content'})
-                except Exception as e: logger.error(f'reply_text failed: {e}')
-            async def reply(self,text,reply_to_message_id=None,**kw):
-                try: await bot.send_message(chat_id=user_id,text=text,**kw)
-                except Exception as e: logger.error(f'reply failed: {e}')
-            async def reply_photo(self,photo,caption='',**kw):
-                try: await bot.send_photo(chat_id=user_id,photo=photo,caption=caption,**kw)
-                except Exception as e: logger.error(f'reply_photo failed: {e}')
-            async def delete(self): pass
-        asyncio.ensure_future(_send_file_with_checks(bot,_FakeMsg(),user_id,file_id))
+        from plugins.miniapp_plugin import send_file_with_checks
+        asyncio.ensure_future(send_file_with_checks(bot, user_id, file_id))
         return json_resp({'ok':True})
     except Exception as exc:
         logger.error(f'send_file dispatch exception: {type(exc).__name__}: {exc}',exc_info=True)
@@ -573,10 +559,8 @@ routes=[
     web.route('GET',     '/miniapp/search',        miniapp_search),
     web.route('GET',     '/miniapp/group_details', miniapp_group_details),
     web.route('GET',     '/miniapp/poster',        miniapp_poster),
-    web.route('POST',    '/miniapp/send_file',     miniapp_send_file),
     web.route('OPTIONS', '/miniapp/browse',        miniapp_browse),
     web.route('OPTIONS', '/miniapp/search',        miniapp_search),
     web.route('OPTIONS', '/miniapp/group_details', miniapp_group_details),
-    web.route('OPTIONS', '/miniapp/send_file',     miniapp_send_file),
     web.route('OPTIONS', '/miniapp/poster',        miniapp_poster),
 ]
