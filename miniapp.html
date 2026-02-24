@@ -259,7 +259,7 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
 <div id="app">
   <div class="header">
     <div class="header-top">
-      <div class="logo">Movie Zone 🍿</div>
+      <div class="logo">Movie Zone</div>
       <div class="header-sub" id="dbCount">Loading...</div>
     </div>
     <div class="search-wrap">
@@ -273,7 +273,6 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
   <div class="tabs">
     <div class="tab active" data-tab="movies" onclick="switchTab('movies',this)">&#127916; Movies</div>
     <div class="tab" data-tab="series" onclick="switchTab('series',this)">&#128250; Series</div>
-    <div class="tab" data-tab="anime" onclick="switchTab('anime',this)">&#10024; Anime</div>
     <div class="tab" data-tab="search" id="searchTab" style="display:none" onclick="switchTab('search',this)">&#128269; Search</div>
   </div>
 
@@ -306,21 +305,6 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
       <div class="grid" id="seriesGrid"></div>
       <div class="load-more-sentinel" id="seriesSentinel">
         <div class="load-more-spinner" id="seriesSpinner"></div>
-      </div>
-    </div>
-
-    <div class="screen" id="screen-anime">
-      <div class="toolbar">
-        <div class="toolbar-title">Anime</div>
-        <div class="view-toggle">
-          <button class="view-btn active" id="animeGridBtn" onclick="setView('anime','grid')">&#9638;</button>
-          <button class="view-btn" id="animeListBtn" onclick="setView('anime','list')">&#8801;</button>
-        </div>
-        <button class="refresh-btn" id="animeRefreshBtn" onclick="refreshTab('anime')"><span class="refresh-icon">&#8635;</span></button>
-      </div>
-      <div class="grid" id="animeGrid"></div>
-      <div class="load-more-sentinel" id="animeSentinel">
-        <div class="load-more-spinner" id="animeSpinner"></div>
       </div>
     </div>
 
@@ -370,14 +354,13 @@ tg.ready();
 tg.expand();
 
 let currentTab   = 'movies';
-let viewModes    = { movies: 'grid', series: 'grid', anime: 'grid' };
+let viewModes    = { movies: 'grid', series: 'grid' };
 let searchDebounce = null;
 let activeChip   = null;
 let preChipTab   = 'movies';
 let tabState     = {
   movies: { files: [], page: 0, loading: false, hasMore: true, loaded: false },
   series: { files: [], page: 0, loading: false, hasMore: true, loaded: false },
-  anime:  { files: [], page: 0, loading: false, hasMore: true, loaded: false },
 };
 
 window.addEventListener('load', async () => {
@@ -534,7 +517,7 @@ async function refreshTab(tab) {
 }
 
 function setupInfiniteScroll() {
-  ['movies','series','anime'].forEach(tab => {
+  ['movies','series'].forEach(tab => {
     const obs = new IntersectionObserver(entries => {
       if (entries[0].isIntersecting && currentTab === tab) loadMoreTab(tab);
     }, { rootMargin: '300px' });
