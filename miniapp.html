@@ -790,8 +790,15 @@ async function requestFile(btn) {
       if (resp.ok) {
         const result = await resp.json().catch(() => null);
         if (result && result.ok) {
-          showToast("✅ Check your DM!");
-          setTimeout(() => { try { tg.close(); } catch(e) {} }, 1500);
+          showToast("✅ File sent! Opening your DM...");
+          // Redirect to bot DM so user sees the file arrive, then close miniapp
+          setTimeout(() => {
+            try {
+              tg.openTelegramLink("https://t.me/" + BOT_USERNAME);
+            } catch(e) {
+              try { tg.close(); } catch(e2) {}
+            }
+          }, 1000);
           return;
         }
         // Server returned ok:false — show what went wrong, re-enable button
