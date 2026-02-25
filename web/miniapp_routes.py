@@ -504,18 +504,27 @@ async def miniapp_html(request):
 
 
 def _validate_init_data(init_data,bot_token):
+    """
+    Validate Telegram WebApp initData according to the official algorithm:
+    https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
+    Returns the parsed user dict on success, None on failure.
+    """
     if not init_data or not bot_token: return None
     try:
-        parsed=parse_qs(init_data,strict_parsing=True)
+        # parse_qs already URL-decodes the values — do NOT call unquote() again
+        parsed=parse_qs(init_data,strict_parsing=False,keep_blank_values=True)
         received_hash=parsed.pop('hash',[None])[0]
         if not received_hash: return None
+        # Build the data-check string: "key=value\n..." sorted alphabetically
         data_check_string='\n'.join(sorted(f'{k}={v[0]}' for k,v in parsed.items()))
+        # HMAC-SHA256 with key = HMAC-SHA256("WebAppData", bot_token)
         secret_key=hmac.new(b'WebAppData',bot_token.encode(),hashlib.sha256).digest()
         expected=hmac.new(secret_key,data_check_string.encode(),hashlib.sha256).hexdigest()
         if not hmac.compare_digest(expected,received_hash): return None
+        # parse_qs already decoded the user JSON string — just parse it directly
         user_raw=parsed.get('user',[None])[0]
         if not user_raw: return None
-        return json.loads(unquote(user_raw))
+        return json.loads(user_raw)
     except Exception as exc:
         logger.error(f'_validate_init_data exception: {exc}'); return None
 
@@ -566,8 +575,10 @@ routes=[
     web.route('GET',     '/miniapp/search',        miniapp_search),
     web.route('GET',     '/miniapp/group_details', miniapp_group_details),
     web.route('GET',     '/miniapp/poster',        miniapp_poster),
+    web.route('POST',    '/miniapp/send_file',     miniapp_send_file),  # was missing — this is what the frontend calls when user taps a file button
     web.route('OPTIONS', '/miniapp/browse',        miniapp_browse),
     web.route('OPTIONS', '/miniapp/search',        miniapp_search),
     web.route('OPTIONS', '/miniapp/group_details', miniapp_group_details),
     web.route('OPTIONS', '/miniapp/poster',        miniapp_poster),
+    web.route('OPTIONS', '/miniapp/send_file',     miniapp_send_file),
 ]
