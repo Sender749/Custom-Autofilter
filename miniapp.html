@@ -757,26 +757,68 @@ function fileBtn(f) {
   return '<button class="file-btn" id="fbtn-' + esc(f.id) + '" data-file-id="' + esc(f.id) + '" onclick="requestFile(this)"><div class="file-btn-icon">' + iconHtml + '</div><div class="file-btn-info"><div class="file-btn-caption">' + esc(f.caption || f.raw_name || "") + '</div></div><div class="file-btn-right"><span class="file-btn-size">' + esc(f.size) + "</span></div></button>";
 }
 
-function requestFile(btn) {
+async function requestFile(btn) {
   const fileId = btn.getAttribute("data-file-id");
   if (!fileId) return;
   tg.HapticFeedback.impactOccurred("medium");
+
+  // Disable button to prevent double-tap
   btn.style.opacity = "0.6";
   btn.style.pointerEvents = "none";
 
-  // FIX: openTelegramLink() MUST be called BEFORE tg.close().
-  // The original code called tg.close() first which destroyed the Telegram
-  // WebApp JS context — making the subsequent openTelegramLink() a no-op.
-  // That is why the miniapp was closing with nothing happening.
+  // ── PRIMARY PATH: POST to /miniapp/send_file ─────────────────────────────
+  // The server validates tg.initData (so no spoofing), extracts the user_id,
+  // and calls send_file_with_checks() which runs ALL checks:
+  //   force-subscribe → file limit → verification → premium
+  // Then delivers the file directly to the user's DM.
   //
-  // Correct flow: open the bot DM deeplink → Telegram navigates to DM and
-  // minimizes/closes the miniapp automatically → bot /start handler runs
-  // send_file_with_checks() with all checks (force-sub, limit, verify, premium).
-  // Works identically regardless of how the miniapp was opened.
+  // This approach works regardless of how the miniapp was opened:
+  //   /miniapp command, menu button, configure button, direct URL link.
+  //
+  // We close the miniapp AFTER the API call succeeds so the user knows
+  // something happened (toast is shown briefly before close).
+  // ─────────────────────────────────────────────────────────────────────────
+  const initData = tg.initData || "";
+
+  if (initData) {
+    try {
+      showToast("⏳ Opening file...");
+      const ctrl = new AbortController();
+      const tid  = setTimeout(() => ctrl.abort(), 8000);
+      const resp = await fetch(API_BASE + "/miniapp/send_file", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ file_id: fileId, initData: initData }),
+        signal:  ctrl.signal,
+      });
+      clearTimeout(tid);
+      const result = resp.ok ? await resp.json() : null;
+
+      if (result && result.ok) {
+        // Success — show brief confirmation then close miniapp
+        showToast("✅ File sent to your DM!");
+        setTimeout(() => {
+          try { tg.close(); } catch(e) {}
+        }, 1200);
+        return;
+      }
+    } catch(err) {
+      // Network error or timeout — fall through to deeplink fallback below
+      console.warn("send_file API error:", err);
+    }
+  }
+
+  // ── FALLBACK: deeplink to bot DM ─────────────────────────────────────────
+  // Used when: initData is missing (rare edge case) OR API call failed.
+  // Opens the bot DM with ?start=miniapp_FILEID so the /start handler runs
+  // send_file_with_checks() and delivers the file after all checks pass.
+  // NOTE: openTelegramLink MUST come before tg.close() — calling close() first
+  // destroys the Telegram WebApp JS context and the link never opens.
+  // ─────────────────────────────────────────────────────────────────────────
+  showToast("🔄 Redirecting to bot...");
   try {
     tg.openTelegramLink("https://t.me/" + BOT_USERNAME + "?start=miniapp_" + encodeURIComponent(fileId));
-    // Safety close in case Telegram does not auto-dismiss the miniapp
-    setTimeout(() => { try { tg.close(); } catch(e) {} }, 400);
+    setTimeout(() => { try { tg.close(); } catch(e) {} }, 500);
   } catch(e) {
     try { tg.close(); } catch(e2) {}
   }
