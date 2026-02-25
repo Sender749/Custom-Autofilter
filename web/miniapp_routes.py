@@ -540,32 +540,58 @@ async def miniapp_poster(request):
 
 
 async def miniapp_send_file(request):
-    if request.method=='OPTIONS': return cors_preflight()
-    if not DB_AVAILABLE: return json_resp({'ok':False,'error':'server_error'},500)
+    """
+    Called by the miniapp frontend when a user taps a file button.
+    Validates the Telegram initData (tamper-proof user identity), then fires
+    send_file_with_checks() which handles ALL delivery logic: force-subscribe,
+    file limit, verification, premium checks, then sends the file to user DM.
+    Returns ok:true immediately — file delivery happens asynchronously.
+    """
+    if request.method == 'OPTIONS':
+        return cors_preflight()
+    if not DB_AVAILABLE:
+        return json_resp({'ok': False, 'error': 'server_error'}, 500)
+
+    # Parse request body
     try:
-        body=await request.json()
+        body = await request.json()
     except Exception:
-        return json_resp({'ok':False,'error':'bad_request'},400)
-    file_id=(body.get('file_id') or '').strip()
-    init_data=(body.get('initData') or '').strip()
-    if not file_id: return json_resp({'ok':False,'error':'bad_request'},400)
-    user_data=_validate_init_data(init_data,BOT_TOKEN)
-    if not user_data: return json_resp({'ok':False,'error':'Unauthorized'},401)
-    user_id=user_data.get('id')
-    bot=getattr(temp,'BOT',None)
-    if bot is None: return json_resp({'ok':False,'error':'server_error'},500)
-    try:
-        file_doc=await get_file_details(file_id)
-    except Exception:
-        return json_resp({'ok':False,'error':'server_error'},500)
-    if not file_doc: return json_resp({'ok':False,'error':'file_not_found'},404)
+        return json_resp({'ok': False, 'error': 'bad_request'}, 400)
+
+    file_id  = (body.get('file_id')  or '').strip()
+    init_data = (body.get('initData') or '').strip()
+
+    if not file_id:
+        return json_resp({'ok': False, 'error': 'bad_request'}, 400)
+
+    # Validate Telegram initData — this proves who the user is without any login
+    user_data = _validate_init_data(init_data, BOT_TOKEN)
+    if not user_data:
+        logger.warning(f'[MiniApp] send_file: initData validation failed for file_id={file_id}')
+        return json_resp({'ok': False, 'error': 'auth_failed'}, 401)
+
+    user_id = user_data.get('id')
+    if not user_id:
+        return json_resp({'ok': False, 'error': 'auth_failed'}, 401)
+
+    # Get bot instance
+    bot = getattr(temp, 'BOT', None)
+    if bot is None:
+        logger.error('[MiniApp] send_file: temp.BOT is None')
+        return json_resp({'ok': False, 'error': 'server_error'}, 500)
+
+    # Dispatch file delivery asynchronously — returns ok:true immediately.
+    # send_file_with_checks() handles all checks and sends the file to user DM.
+    # Any errors (file not found, user blocked, etc.) are handled inside that function
+    # and communicated directly to the user via bot messages.
     try:
         from plugins.miniapp_plugin import send_file_with_checks
         asyncio.ensure_future(send_file_with_checks(bot, user_id, file_id))
-        return json_resp({'ok':True})
+        logger.info(f'[MiniApp] send_file dispatched: user={user_id} file={file_id}')
+        return json_resp({'ok': True})
     except Exception as exc:
-        logger.error(f'send_file dispatch exception: {type(exc).__name__}: {exc}',exc_info=True)
-        return json_resp({'ok':False,'error':'server_error'},500)
+        logger.error(f'[MiniApp] send_file dispatch error: {type(exc).__name__}: {exc}', exc_info=True)
+        return json_resp({'ok': False, 'error': 'server_error'}, 500)
 
 
 routes=[
