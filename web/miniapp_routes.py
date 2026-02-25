@@ -492,8 +492,15 @@ async def miniapp_group_details(request):
 async def miniapp_html(request):
     import os
     html_path=os.path.join(os.path.dirname(os.path.dirname(__file__)),'miniapp.html')
-    if os.path.exists(html_path): return web.FileResponse(html_path)
-    return web.Response(text='miniapp.html not found',status=404)
+    if not os.path.exists(html_path):
+        return web.Response(text='miniapp.html not found',status=404)
+    # Inject the live bot username so the miniapp always redirects to the correct bot,
+    # regardless of what was hard-coded in the HTML file.
+    # temp.U_NAME is set at bot startup from the bot's own Telegram account info.
+    bot_username = getattr(temp, 'U_NAME', None) or ''
+    html = open(html_path, 'r', encoding='utf-8').read()
+    html = html.replace('{{BOT_USERNAME}}', bot_username)
+    return web.Response(text=html, content_type='text/html', charset='utf-8')
 
 
 def _validate_init_data(init_data,bot_token):
