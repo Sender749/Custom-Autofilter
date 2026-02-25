@@ -289,7 +289,7 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
 
 <script>
 const API_BASE     = "https://precious-mab-filetokensender-fdc78bed.koyeb.app";
-const BOT_USERNAME = "Navex_MoviesHub_Bot";
+const BOT_USERNAME = "{{BOT_USERNAME}}";
 
 const tg = window.Telegram.WebApp;
 tg.ready();
@@ -764,20 +764,22 @@ function requestFile(btn) {
   btn.style.opacity = "0.6";
   btn.style.pointerEvents = "none";
 
-  // Universal approach: close miniapp immediately, then open bot DM with deeplink.
-  // Bot's /start handler receives ?start=miniapp_FILEID and calls send_file_with_checks.
-  // This works identically regardless of how the miniapp was opened
-  // (menu button, /miniapp command, configure button, direct link).
-  // No fetch. No sendData. No initData needed.
-  tg.close();
-  setTimeout(() => {
-    try {
-      tg.openTelegramLink("https://t.me/" + BOT_USERNAME + "?start=miniapp_" + encodeURIComponent(fileId));
-    } catch(e) {
-      // Fallback: open bot DM without deeplink if Telegram API fails
-      try { tg.openTelegramLink("https://t.me/" + BOT_USERNAME); } catch(e2) {}
-    }
-  }, 100);
+  // FIX: openTelegramLink() MUST be called BEFORE tg.close().
+  // The original code called tg.close() first which destroyed the Telegram
+  // WebApp JS context — making the subsequent openTelegramLink() a no-op.
+  // That is why the miniapp was closing with nothing happening.
+  //
+  // Correct flow: open the bot DM deeplink → Telegram navigates to DM and
+  // minimizes/closes the miniapp automatically → bot /start handler runs
+  // send_file_with_checks() with all checks (force-sub, limit, verify, premium).
+  // Works identically regardless of how the miniapp was opened.
+  try {
+    tg.openTelegramLink("https://t.me/" + BOT_USERNAME + "?start=miniapp_" + encodeURIComponent(fileId));
+    // Safety close in case Telegram does not auto-dismiss the miniapp
+    setTimeout(() => { try { tg.close(); } catch(e) {} }, 400);
+  } catch(e) {
+    try { tg.close(); } catch(e2) {}
+  }
 }
 
 function switchSeason(sNum, tabEl) {
