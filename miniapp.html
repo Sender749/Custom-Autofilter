@@ -289,7 +289,7 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
 
 <script>
 const API_BASE     = window.location.origin; // auto-detects the actual host - never hardcode this
-const BOT_USERNAME = "{{BOT_USERNAME}}";
+const BOT_USERNAME = "Navex_MoviesHub_Bot";
 
 const tg = window.Telegram.WebApp;
 tg.ready();
@@ -763,15 +763,6 @@ async function requestFile(btn) {
   tg.HapticFeedback.impactOccurred("medium");
   btn.style.opacity = "0.6";
   btn.style.pointerEvents = "none";
-
-  // ── PRIMARY PATH ──────────────────────────────────────────────────────────
-  // POST to /miniapp/send_file on the SAME server that served this HTML page.
-  // API_BASE = window.location.origin so this always works regardless of deployment URL.
-  // Server validates tg.initData, gets user_id, runs ALL checks (force-sub,
-  // file limit, verification, premium), then sends the file to the user's DM.
-  // This works for ALL miniapp entry points: menu button, /miniapp command,
-  // configure button, direct URL — because tg.initData is always available.
-  // ─────────────────────────────────────────────────────────────────────────
   const initData = tg.initData || "";
 
   if (initData) {
@@ -793,10 +784,11 @@ async function requestFile(btn) {
           showToast("✅ File sent! Opening your DM...");
           // Redirect to bot DM so user sees the file arrive, then close miniapp
           setTimeout(() => {
+            const url = "https://t.me/Navex_MoviesHub_Bot?start=miniapp_" + encodeURIComponent(fileId);
             try {
-              tg.openTelegramLink("https://t.me/" + BOT_USERNAME);
+              tg.openTelegramLink(url);
             } catch(e) {
-              try { tg.close(); } catch(e2) {}
+              window.location.href = url;
             }
           }, 1000);
           return;
