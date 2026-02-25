@@ -288,7 +288,7 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
 <div id="toast"></div>
 
 <script>
-const API_BASE     = "https://precious-mab-filetokensender-fdc78bed.koyeb.app";
+const API_BASE     = window.location.origin; // auto-detects the actual host - never hardcode this
 const BOT_USERNAME = "{{BOT_USERNAME}}";
 
 const tg = window.Telegram.WebApp;
@@ -761,30 +761,24 @@ async function requestFile(btn) {
   const fileId = btn.getAttribute("data-file-id");
   if (!fileId) return;
   tg.HapticFeedback.impactOccurred("medium");
-
-  // Disable button to prevent double-tap
   btn.style.opacity = "0.6";
   btn.style.pointerEvents = "none";
 
-  // ── PRIMARY PATH: POST to /miniapp/send_file ─────────────────────────────
-  // The server validates tg.initData (so no spoofing), extracts the user_id,
-  // and calls send_file_with_checks() which runs ALL checks:
-  //   force-subscribe → file limit → verification → premium
-  // Then delivers the file directly to the user's DM.
-  //
-  // This approach works regardless of how the miniapp was opened:
-  //   /miniapp command, menu button, configure button, direct URL link.
-  //
-  // We close the miniapp AFTER the API call succeeds so the user knows
-  // something happened (toast is shown briefly before close).
+  // ── PRIMARY PATH ──────────────────────────────────────────────────────────
+  // POST to /miniapp/send_file on the SAME server that served this HTML page.
+  // API_BASE = window.location.origin so this always works regardless of deployment URL.
+  // Server validates tg.initData, gets user_id, runs ALL checks (force-sub,
+  // file limit, verification, premium), then sends the file to the user's DM.
+  // This works for ALL miniapp entry points: menu button, /miniapp command,
+  // configure button, direct URL — because tg.initData is always available.
   // ─────────────────────────────────────────────────────────────────────────
   const initData = tg.initData || "";
 
   if (initData) {
     try {
-      showToast("⏳ Opening file...");
+      showToast("⏳ Sending file...");
       const ctrl = new AbortController();
-      const tid  = setTimeout(() => ctrl.abort(), 8000);
+      const tid  = setTimeout(() => ctrl.abort(), 10000);
       const resp = await fetch(API_BASE + "/miniapp/send_file", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
@@ -792,36 +786,40 @@ async function requestFile(btn) {
         signal:  ctrl.signal,
       });
       clearTimeout(tid);
-      const result = resp.ok ? await resp.json() : null;
 
-      if (result && result.ok) {
-        // Success — show brief confirmation then close miniapp
-        showToast("✅ File sent to your DM!");
-        setTimeout(() => {
-          try { tg.close(); } catch(e) {}
-        }, 1200);
+      if (resp.ok) {
+        const result = await resp.json().catch(() => null);
+        if (result && result.ok) {
+          showToast("✅ Check your DM!");
+          setTimeout(() => { try { tg.close(); } catch(e) {} }, 1500);
+          return;
+        }
+        // Server returned ok:false — show what went wrong, re-enable button
+        const errMsg = (result && result.error) ? result.error : "server_error";
+        showToast("⚠️ " + errMsg);
+        btn.style.opacity = "";
+        btn.style.pointerEvents = "";
         return;
       }
     } catch(err) {
-      // Network error or timeout — fall through to deeplink fallback below
-      console.warn("send_file API error:", err);
+      // Network error / timeout — fall through to deeplink below
+      console.warn("send_file fetch error:", err);
     }
   }
 
-  // ── FALLBACK: deeplink to bot DM ─────────────────────────────────────────
-  // Used when: initData is missing (rare edge case) OR API call failed.
-  // Opens the bot DM with ?start=miniapp_FILEID so the /start handler runs
-  // send_file_with_checks() and delivers the file after all checks pass.
-  // NOTE: openTelegramLink MUST come before tg.close() — calling close() first
-  // destroys the Telegram WebApp JS context and the link never opens.
+  // ── FALLBACK: window.location.href deep link ──────────────────────────────
+  // Used only when initData is unavailable or network call fails.
+  // window.location.href with a t.me link is intercepted by Telegram's in-app
+  // browser and handled as a native deep link — it DOES trigger /start even
+  // for users who already have an existing chat with the bot.
+  // (Unlike tg.openTelegramLink which silently opens the existing chat without
+  // re-sending /start, and unlike tg.close()+openTelegramLink where close()
+  // destroys the JS context before the link can open.)
   // ─────────────────────────────────────────────────────────────────────────
-  showToast("🔄 Redirecting to bot...");
-  try {
-    tg.openTelegramLink("https://t.me/" + BOT_USERNAME + "?start=miniapp_" + encodeURIComponent(fileId));
-    setTimeout(() => { try { tg.close(); } catch(e) {} }, 500);
-  } catch(e) {
-    try { tg.close(); } catch(e2) {}
-  }
+  showToast("🔄 Opening bot...");
+  setTimeout(() => {
+    window.location.href = "https://t.me/" + BOT_USERNAME + "?start=miniapp_" + encodeURIComponent(fileId);
+  }, 300);
 }
 
 function switchSeason(sNum, tabEl) {
