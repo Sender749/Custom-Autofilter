@@ -778,28 +778,20 @@ async function requestFile(btn) {
       });
       clearTimeout(tid);
 
-      if (resp.ok) {
-        const result = await resp.json().catch(() => null);
-        if (result && result.ok) {
-          showToast("✅ File sent! Opening your DM...");
-          // Redirect to bot DM so user sees the file arrive, then close miniapp
-          setTimeout(() => {
-            const url = "https://t.me/Navex_MoviesHub_Bot?start=miniapp_" + encodeURIComponent(fileId);
-            try {
-              tg.openTelegramLink(url);
-            } catch(e) {
-              window.location.href = url;
-            }
-          }, 1000);
-          return;
+      const result = await resp.json().catch(() => null);
+      // Always redirect to bot DM — whether ok:true (file dispatched) or
+      // ok:false (auth/checks failed) — all logic (force-sub, verify, delivery)
+      // happens in the bot DM. Miniapp minimizes and user sees it there.
+      showToast("✅ Opening your DM...");
+      setTimeout(() => {
+        const url = "https://t.me/" + BOT_USERNAME + "?start=miniapp_" + encodeURIComponent(fileId);
+        try {
+          tg.openTelegramLink(url);
+        } catch(e) {
+          window.location.href = url;
         }
-        // Server returned ok:false — show what went wrong, re-enable button
-        const errMsg = (result && result.error) ? result.error : "server_error";
-        showToast("⚠️ " + errMsg);
-        btn.style.opacity = "";
-        btn.style.pointerEvents = "";
-        return;
-      }
+      }, 600);
+      return;
     } catch(err) {
       // Network error / timeout — fall through to deeplink below
       console.warn("send_file fetch error:", err);
