@@ -779,12 +779,18 @@ async function requestFile(btn) {
       clearTimeout(tid);
 
       const result = await resp.json().catch(() => null);
-      // Always redirect to bot DM — whether ok:true (file dispatched) or
-      // ok:false (auth/checks failed) — all logic (force-sub, verify, delivery)
-      // happens in the bot DM. Miniapp minimizes and user sees it there.
-      showToast("✅ Opening your DM...");
+      // If ok:true — file already dispatched server-side. Open bot DM WITHOUT start param to prevent double send.
+      // If ok:false — auth/checks failed. Open with start=miniapp_ so /start in DM handles force-sub/verify.
+      showToast(result && result.ok ? "✅ File sent to your DM!" : "🔄 Opening bot...");
       setTimeout(() => {
-        const url = "https://t.me/" + BOT_USERNAME + "?start=miniapp_" + encodeURIComponent(fileId);
+        let url;
+        if (result && result.ok) {
+          // File already dispatched — just open bot DM, do NOT re-trigger /start
+          url = "https://t.me/" + BOT_USERNAME;
+        } else {
+          // Server-side failed — redirect so /start handles checks in DM
+          url = "https://t.me/" + BOT_USERNAME + "?start=miniapp_" + encodeURIComponent(fileId);
+        }
         try {
           tg.openTelegramLink(url);
         } catch(e) {
