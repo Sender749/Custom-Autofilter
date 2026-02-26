@@ -265,12 +265,24 @@ _thread_pool = _cf.ThreadPoolExecutor(max_workers=6)
 
 def _all_files(limit=300):
     try:
+        # ---- 1️⃣ Get latest files ----
         docs = list(_col.find({}).sort('_id', -1).limit(limit))
+
         if _is2db() and len(docs) < limit:
             extra = list(_scol.find({}).sort('_id', -1).limit(limit - len(docs)))
             seen = {d['_id'] for d in docs}
             docs += [d for d in extra if d['_id'] not in seen]
-        return docs
+
+        # ---- 2️⃣ Keep first 6 as latest ----
+        latest = docs[:6]
+
+        # ---- 3️⃣ Shuffle remaining ----
+        remaining = docs[6:]
+        random.shuffle(remaining)
+
+        # ---- 4️⃣ Combine ----
+        return latest + remaining
+
     except Exception as e:
         _logger.error(f'_all_files: {type(e).__name__}: {e}')
         return []
@@ -332,20 +344,39 @@ async def _async_files_by_key(key, limit=120):
     return await loop.run_in_executor(_thread_pool, _files_by_key, key, limit)
 
 def _group(docs):
-    """Group docs by title key. Returns {key: {rep, files, year}}."""
+    """
+    Group docs by title key AND sort groups by newest upload.
+    """
     groups = {}
+
     for doc in docs:
         fname = doc.get('caption') or doc.get('file_name', '')
         key = _title_key(fname)
         if not key:
             continue
+
         if key not in groups:
-            groups[key] = {'rep': doc, 'files': [], 'year': _extract_year(fname)}
+            groups[key] = {
+                'rep': doc,
+                'files': [],
+                'latest_id': doc['_id']   # ⭐ store newest file id
+            }
+
         groups[key]['files'].append(doc)
-        if _qs(fname) > _qs(groups[key]['rep'].get('caption') or
-                             groups[key]['rep'].get('file_name', '')):
-            groups[key]['rep'] = doc
-    return groups
+
+        # ⭐ Update latest upload inside group
+        if doc['_id'] > groups[key]['latest_id']:
+            groups[key]['latest_id'] = doc['_id']
+            groups[key]['rep'] = doc  # representative becomes newest
+
+    # ⭐ Sort groups by newest upload
+    sorted_groups = dict(
+        sorted(groups.items(),
+               key=lambda item: item[1]['latest_id'],
+               reverse=True)
+    )
+
+    return sorted_groups
 
 def _organise(docs):
     """Organise docs into movie or series tree."""
@@ -720,58 +751,65 @@ async def miniapp_cors(request):
 @routes.get("/miniapp/recent")
 async def miniapp_recent(request):
     """
-    Returns raw DB cards FAST with NO external API calls.
-    Posters are fetched lazily by the client via /miniapp/poster after cards load.
-    Supports pagination: ?page=N&limit=20
+    TRUE Recently Added Titles endpoint
     """
+
     if not _DB_OK:
         return _jresp({"ok": False, "error": "DB unavailable"}, 500)
+
     try:
         page  = max(0, int(request.rel_url.query.get("page", 0)))
         limit = min(int(request.rel_url.query.get("limit", 20)), 40)
     except Exception:
         page, limit = 0, 20
 
-    skip     = page * (limit * 3)
-    all_docs = await _async_all_files_paged(skip, limit * 8)
-    groups   = _group(all_docs)
-    sorted_groups = sorted(groups.values(), key=lambda g: g['rep']['_id'], reverse=True)
-    target   = sorted_groups[:limit]
-    has_more = len(sorted_groups) > limit
+    # ⭐ ALWAYS GET LATEST FILES FROM DB
+    latest_docs = await _async_all_files(limit=500)
+
+    # ⭐ GROUP BY TITLE
+    groups = _group(latest_docs)
+
+    # ⭐ SORT TITLES BY NEWEST UPLOAD
+    sorted_groups = sorted(
+        groups.values(),
+        key=lambda g: g['latest_id'],
+        reverse=True
+    )
+
+    # ⭐ PAGINATION AFTER GROUPING
+    start = page * limit
+    target = sorted_groups[start:start + limit]
+
+    has_more = len(sorted_groups) > start + limit
 
     results = []
+
     for grp in target:
         rep   = grp['rep']
         fname = rep.get('caption') or rep.get('file_name', '')
-        title = _clean_title(fname)
-        year  = grp.get('year') or _extract_year(fname)
 
-        # Check cache for instant enrichment (no network call)
-        ck_tmdb = f"tmdb|{title.lower().strip()}|{year}"
-        ck_imdb = f"imdb|{title.lower().strip()}|{year}"
-        meta = None
-        for ck in (ck_tmdb, ck_imdb):
-            c = _META_CACHE.get(ck)
-            if c and (time.time() - c[0]) < _META_CACHE_TTL and c[1]:
-                meta = c[1]
-                break
+        title = _clean_title(fname)
+        year  = _extract_year(fname)
 
         results.append({
             'group_title': title,
             'id':          str(rep['_id']),
-            'name':        (meta or {}).get('title') or title,
-            'year':        (meta or {}).get('year') or year,
-            'poster':      (meta or {}).get('poster'),
-            'backdrop':    (meta or {}).get('backdrop'),
-            'rating':      (meta or {}).get('rating'),
-            'genres':      (meta or {}).get('genres', []),
-            'type':        (meta or {}).get('type') or ('series' if _is_series(fname) else 'movie'),
+            'name':        title,
+            'year':        year,
+            'poster':      None,
+            'rating':      None,
+            'genres':      [],
+            'type':        'series' if _is_series(fname) else 'movie',
             'file_count':  len(grp['files']),
         })
 
-    return _jresp({'ok': True, 'results': results, 'count': len(results),
-                   'page': page, 'has_more': has_more})
-
+    return _jresp({
+        'ok': True,
+        'results': results,
+        'count': len(results),
+        'page': page,
+        'has_more': has_more
+    })
 
 @routes.get("/miniapp/poster")
 async def miniapp_poster(request):
