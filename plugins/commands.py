@@ -1053,6 +1053,7 @@ async def set_log(client, message):
             "<b>⚙️ ʙᴏᴛ ɪs ᴄᴜʀʀᴇɴᴛʟʏ ᴜɴᴅᴇʀ ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ!\n\n"
             "🚧 ᴘʟᴇᴀsᴇ ᴛʀʏ ᴀɢᴀɪɴ ʟᴀᴛᴇʀ.</b>"
         )
+    chat_type = message.chat.type
     grp_id = message.chat.id
     title = message.chat.title
     if chat_type not in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
@@ -1065,7 +1066,6 @@ async def set_log(client, message):
     sts = await message.reply("<b>♻️ ᴄʜᴇᴄᴋɪɴɢ...</b>")
     await asyncio.sleep(1.2)
     await sts.delete()
-    chat_type = message.chat.type
     try:
         log = int(message.text.split(" ", 1)[1])
     except IndexError:
