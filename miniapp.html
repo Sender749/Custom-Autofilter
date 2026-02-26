@@ -778,26 +778,28 @@ async function requestFile(btn) {
       });
       clearTimeout(tid);
 
-      const result = await resp.json().catch(() => null);
-      // If ok:true — file already dispatched server-side. Open bot DM WITHOUT start param to prevent double send.
-      // If ok:false — auth/checks failed. Open with start=miniapp_ so /start in DM handles force-sub/verify.
-      showToast(result && result.ok ? "✅ File sent to your DM!" : "🔄 Opening bot...");
-      setTimeout(() => {
-        let url;
+      if (resp.ok) {
+        const result = await resp.json().catch(() => null);
         if (result && result.ok) {
-          // File already dispatched — just open bot DM, do NOT re-trigger /start
-          url = "https://t.me/" + BOT_USERNAME;
-        } else {
-          // Server-side failed — redirect so /start handles checks in DM
-          url = "https://t.me/" + BOT_USERNAME + "?start=miniapp_" + encodeURIComponent(fileId);
+          showToast("✅ File sent! Opening your DM...");
+          // Redirect to bot DM so user sees the file arrive, then close miniapp
+          setTimeout(() => {
+            const url = "https://t.me/Navex_MoviesHub_Bot?start=miniapp_" + encodeURIComponent(fileId);
+            try {
+              tg.openTelegramLink(url);
+            } catch(e) {
+              window.location.href = url;
+            }
+          }, 1000);
+          return;
         }
-        try {
-          tg.openTelegramLink(url);
-        } catch(e) {
-          window.location.href = url;
-        }
-      }, 600);
-      return;
+        // Server returned ok:false — show what went wrong, re-enable button
+        const errMsg = (result && result.error) ? result.error : "server_error";
+        showToast("⚠️ " + errMsg);
+        btn.style.opacity = "";
+        btn.style.pointerEvents = "";
+        return;
+      }
     } catch(err) {
       // Network error / timeout — fall through to deeplink below
       console.warn("send_file fetch error:", err);
