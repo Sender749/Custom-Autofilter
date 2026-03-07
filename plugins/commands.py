@@ -13,7 +13,7 @@ from database.users_chats_db import db
 from database.extra_db import silicondb
 from database.ia_filterdb import get_file_details
 from utils import formate_file_name,  get_settings, save_group_settings, is_subscribed, is_req_subscribed, get_size, get_shortlink, is_check_admin, get_status, temp, get_readable_time, generate_trend_list, extract_limit_from_command, create_keyboard_layout, process_trending_data, log_error, group_setting_buttons
-from .pm_filter import auto_filter
+from .pm_filter import auto_filter, REQUEST_DEDUP
 import re
 import base64
 from info import *
@@ -737,6 +737,12 @@ async def send_request(bot, message):
     except:
         await message.reply_text("<b>‼️ ʏᴏᴜʀ ʀᴇǫᴜᴇsᴛ ɪs ɪɴᴄᴏᴍᴘʟᴇᴛᴇ\n\nᴜsᴇ ᴛʜɪs ғᴏʀᴍᴀᴛ 👇\n\nᴇxᴀᴍᴘʟᴇ : /request ironman 2013</b>")
         return
+    # Duplicate filter: silently skip if same query already pending
+    user_id = message.from_user.id
+    dedup_key = request.lower().strip()
+    if REQUEST_DEDUP.get(user_id) == dedup_key:
+        return
+    REQUEST_DEDUP[user_id] = dedup_key
     buttons = [[
         InlineKeyboardButton('👀 ᴠɪᴇᴡ ʀᴇǫᴜᴇꜱᴛ 👀', url=f"{message.link}")
     ],[
