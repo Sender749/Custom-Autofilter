@@ -1366,6 +1366,9 @@ async def cancel_custom_reply(client, query: CallbackQuery):
     except:
         pass
     await query.answer("Cancelled ✖️")
+
+
+@Client.on_callback_query(filters.regex(r"^cancel_wrong#"))
 async def cancel_wrong_spelling(client, query: CallbackQuery):
     _, req_msg_id = query.data.split("#")
     req_msg_id = int(req_msg_id)
@@ -1414,80 +1417,81 @@ async def cancel_wrong_spelling(client, query: CallbackQuery):
     await query.answer("Cancelled ✖️")
 
 
-@Client.on_message(filters.text & filters.reply & filters.chat(REQUEST_CHANNEL))
-async def handle_wrong_spelling_input(client, message):
-    reply = message.reply_to_message
-    if not reply:
-        return
-    data = WRONG_SPELL_WAIT.pop(reply.id, None)
-    if not data:
-        return
-    correct_name = message.text.strip()
-    request_msg = data["request_msg"]
-    user_id = data["user_id"]
-    msg_id = data["msg_id"]
-    try:
-        await message.delete()
-    except:
-        pass
-    try:
-        await reply.delete()
-    except:
-        pass
-    old_text = request_msg.text or request_msg.caption or "Request"
-    status_btn = [[InlineKeyboardButton("✏️ ᴜᴘʟᴏᴀᴅᴇᴅ (ᴡʀᴏɴɢ sᴘᴇʟʟɪɴɢ)", callback_data=f"ulws_alert#{user_id}")
-    ]]
-    await request_msg.edit_text(f"<s>{old_text}</s>")
-    await request_msg.edit_reply_markup(InlineKeyboardMarkup(status_btn))
-    user_buttons = [
-        [InlineKeyboardButton("👥 Movie Group", url=MOVIE_GROUP_LINK)],
-        [InlineKeyboardButton("👀 View Request", url=request_msg.link)]
-    ]
-    try:
-        await client.send_message(
-            chat_id=user_id,
-            text=(
-                "<b>Your requested file is already uploaded.\n\n"
-                f"✅ Correct Spelling – <code>{correct_name}</code>\n\n"
-                "Please send correct spelling in group.</b>"
-            ),
-            reply_markup=InlineKeyboardMarkup(user_buttons)
-        )
-    except UserIsBlocked:
-        await client.send_message(
-            SUPPORT_GROUP,
-            text=(
-                "<b>Your requested file is already uploaded.\n\n"
-                f"✅ Correct Spelling – <code>{correct_name}</code></b>"
-            ),
-            reply_markup=InlineKeyboardMarkup(user_buttons),
-            reply_to_message_id=msg_id
-        )
-
-
+# Single unified handler for ALL replies in REQUEST_CHANNEL.
+# Must be one handler to avoid filter conflicts between wrong-spell and custom-reply.
 @Client.on_message(filters.reply & filters.chat(REQUEST_CHANNEL))
-async def handle_custom_reply_input(client, message):
+async def handle_channel_reply_input(client, message):
     reply = message.reply_to_message
     if not reply:
         return
-    data = CUSTOM_REPLY_WAIT.pop(reply.id, None)
-    if not data:
-        return
-    user_id = data["user_id"]
-    msg_id = data["msg_id"]
-    request_msg = data["request_msg"]
 
-    # Build status button for request channel
+    # ── Path 1: Wrong-spelling correction ──────────────────────────────────
+    spell_data = WRONG_SPELL_WAIT.pop(reply.id, None)
+    if spell_data:
+        correct_name = (message.text or "").strip()
+        request_msg = spell_data["request_msg"]
+        user_id = spell_data["user_id"]
+        msg_id = spell_data["msg_id"]
+        try:
+            await message.delete()
+        except:
+            pass
+        try:
+            await reply.delete()
+        except:
+            pass
+        old_text = request_msg.text or request_msg.caption or "Request"
+        status_btn = [[InlineKeyboardButton("✏️ ᴜᴘʟᴏᴀᴅᴇᴅ (ᴡʀᴏɴɢ sᴘᴇʟʟɪɴɢ)", callback_data=f"ulws_alert#{user_id}")]]
+        await request_msg.edit_text(f"<s>{old_text}</s>")
+        await request_msg.edit_reply_markup(InlineKeyboardMarkup(status_btn))
+        user_buttons = [
+            [InlineKeyboardButton("👥 Movie Group", url=MOVIE_GROUP_LINK)],
+            [InlineKeyboardButton("👀 View Request", url=request_msg.link)]
+        ]
+        try:
+            await client.send_message(
+                chat_id=user_id,
+                text=(
+                    "<b>Your requested file is already uploaded.\n\n"
+                    f"✅ Correct Spelling – <code>{correct_name}</code>\n\n"
+                    "Please send correct spelling in group.</b>"
+                ),
+                reply_markup=InlineKeyboardMarkup(user_buttons)
+            )
+        except UserIsBlocked:
+            await client.send_message(
+                SUPPORT_GROUP,
+                text=(
+                    "<b>Your requested file is already uploaded.\n\n"
+                    f"✅ Correct Spelling – <code>{correct_name}</code></b>"
+                ),
+                reply_markup=InlineKeyboardMarkup(user_buttons),
+                reply_to_message_id=msg_id
+            )
+        return
+
+    # ── Path 2: Custom reply to user ───────────────────────────────────────
+    custom_data = CUSTOM_REPLY_WAIT.pop(reply.id, None)
+    if not custom_data:
+        return
+
+    user_id = custom_data["user_id"]
+    msg_id = custom_data["msg_id"]
+    request_msg = custom_data["request_msg"]
+
     old_text = request_msg.text or request_msg.caption or "Request"
     status_btn = [[InlineKeyboardButton("💬 ʀᴇsᴘᴏɴᴅᴇᴅ", callback_data=f"responded_alert#{user_id}")]]
-
-    # Forward the admin's message to the user
     view_btn = [[InlineKeyboardButton("♻️ ᴠɪᴇᴡ sᴛᴀᴛᴜs ♻️", url=request_msg.link)]]
+
+    # Copy admin's message (any type) to user
+    sent_ok = False
     try:
         await message.copy(chat_id=user_id, reply_markup=InlineKeyboardMarkup(view_btn))
         sent_ok = True
     except UserIsBlocked:
-        sent_ok = False
+        pass
+    except Exception:
+        pass
 
     if not sent_ok:
         try:
@@ -1511,12 +1515,15 @@ async def handle_custom_reply_input(client, message):
     except:
         pass
 
-    # Update request message status
+    # Update request message status to responded
     try:
         await request_msg.edit_text(f"<s>{old_text}</s>")
         await request_msg.edit_reply_markup(InlineKeyboardMarkup(status_btn))
     except:
         pass
+
+
+async def ai_spell_check(wrong_name):
     async def search_movie(wrong_name):
         search_results = imdb.search_movie(wrong_name)
         movie_list = [movie['title'] for movie in search_results]
@@ -1527,7 +1534,7 @@ async def handle_custom_reply_input(client, message):
     for _ in range(5):
         closest_match = process.extractOne(wrong_name, movie_list)
         if not closest_match or closest_match[1] <= 80:
-            return 
+            return
         movie = closest_match[0]
         files, offset, total_results = await get_search_results(movie)
         if files:
