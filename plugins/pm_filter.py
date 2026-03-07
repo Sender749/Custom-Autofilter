@@ -29,6 +29,8 @@ PAGE_CACHE_TTL = 300  # 5 minutes
 PAGE_PREFETCH = 3     # current + next 2 pages
 SUGGESTION_TRACKER = {}
 WRONG_SPELL_WAIT = {}
+CUSTOM_REPLY_WAIT = {}   # prompt_msg_id -> {user_id, msg_id, request_msg}
+REQUEST_DEDUP = {}       # user_id -> last_query (lowercase stripped)
 
 @Client.on_message(filters.private & filters.text & filters.incoming)
 async def pm_search(client, message):
@@ -535,6 +537,9 @@ async def trigger_auto_request(bot, message, search):
     user = getattr(message, "_real_user", message.from_user)
     if not user or user.is_bot:
         return
+    # Don't auto-send request to channel if the user is an admin
+    if user.id in ADMINS:
+        return
     await send_request_common(
         bot,
         user=user,
@@ -558,6 +563,12 @@ async def send_request_common(
     search,
     origin_message=None
 ):
+    # Duplicate request filter: skip if user already sent same query
+    dedup_key = search.lower().strip()
+    if REQUEST_DEDUP.get(user.id) == dedup_key:
+        return  # silently skip – do NOT notify user
+    REQUEST_DEDUP[user.id] = dedup_key
+
     buttons = []
     if origin_message and origin_message.chat.type in ("group", "supergroup"):
         buttons.append([
@@ -1046,6 +1057,8 @@ async def cb_handler(client: Client, query: CallbackQuery):
             InlineKeyboardButton("ɴᴏᴛ ᴀᴠᴀɪʟᴀʙʟᴇ", callback_data=f"not_available#{user_id}#{msg_id}")
         ],[
             InlineKeyboardButton("ᴜᴘʟᴏᴀᴅᴇᴅ, ᴡʀᴏɴɢ sᴘᴇʟʟɪɴɢ", callback_data=f"spl_wrong#{user_id}#{msg_id}")
+        ],[
+            InlineKeyboardButton("💬 ᴄᴜsᴛᴏᴍ ʀᴇᴘʟʏ", callback_data=f"custom_reply#{user_id}#{msg_id}")
         ]]
         try:
             st = await client.get_chat_member(chnl_id, userid)
@@ -1284,7 +1297,75 @@ async def cb_handler(client: Client, query: CallbackQuery):
         else:
             await query.answer(script.ALRT_TXT, show_alert=True)
 
-@Client.on_callback_query(filters.regex(r"^cancel_wrong#"))
+    elif query.data.startswith("responded_alert"):
+        ident, user_id = query.data.split("#")
+        if str(query.from_user.id) in user_id:
+            await query.answer("ᴀᴅᴍɪɴ ʜᴀs ʀᴇᴘʟɪᴇᴅ ᴛᴏ ʏᴏᴜʀ ʀᴇǫᴜᴇsᴛ 💬", show_alert=True)
+        else:
+            await query.answer(script.ALRT_TXT, show_alert=True)
+
+    elif query.data.startswith("custom_reply"):
+        ident, user_id, msg_id = query.data.split("#")
+        chnl_id = query.message.chat.id
+        userid = query.from_user.id
+        try:
+            st = await client.get_chat_member(chnl_id, userid)
+            if st.status not in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]:
+                return await query.answer(script.ALRT_TXT, show_alert=True)
+        except pyrogram.errors.exceptions.bad_request_400.UserNotParticipant:
+            return await query.answer("⚠️ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀ ᴍᴇᴍʙᴇʀ ᴏꜰ ᴛʜɪꜱ ᴄʜᴀɴɴᴇʟ, ꜰɪʀꜱᴛ ᴊᴏɪɴ", show_alert=True)
+        prompt = await client.send_message(
+            chnl_id,
+            "💬 <b>Send your custom reply message for the user</b>",
+            reply_to_message_id=query.message.id,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_custom#{query.message.id}")]])
+        )
+        CUSTOM_REPLY_WAIT[prompt.id] = {
+            "user_id": int(user_id),
+            "msg_id": int(msg_id),
+            "request_msg": query.message,
+            "prompt_id": prompt.id
+        }
+        await query.answer()
+
+@Client.on_callback_query(filters.regex(r"^cancel_custom#"))
+async def cancel_custom_reply(client, query: CallbackQuery):
+    _, req_msg_id = query.data.split("#")
+    req_msg_id = int(req_msg_id)
+    prompt_id = None
+    for pid, data in CUSTOM_REPLY_WAIT.items():
+        if data["request_msg"].id == req_msg_id:
+            prompt_id = pid
+            break
+    if not prompt_id:
+        return await query.answer("Nothing to cancel", show_alert=True)
+    data = CUSTOM_REPLY_WAIT.pop(prompt_id)
+    try:
+        await query.message.delete()
+    except:
+        pass
+    user_id = data["user_id"]
+    msg_id = data["msg_id"]
+    req_msg = data["request_msg"]
+    buttons = [[
+        InlineKeyboardButton("ᴀʟʀᴇᴀᴅʏ ᴀᴠᴀɪʟᴀʙʟᴇ", callback_data=f"already_available#{user_id}#{msg_id}"),
+        InlineKeyboardButton("ɴᴏᴛ ʀᴇʟᴇᴀsᴇᴅ ʏᴇᴛ", callback_data=f"not_released#{user_id}#{msg_id}")
+    ],[
+        InlineKeyboardButton("ᴛᴇʟʟ ᴍᴇ ʏᴇᴀʀ/ʟᴀɴɢᴜᴀɢᴇ", callback_data=f"year#{user_id}#{msg_id}"),
+        InlineKeyboardButton("ᴄʜᴇᴄᴋ ʏᴏᴜʀ sᴘᴇʟʟɪɴɢ", callback_data=f"upload_in#{user_id}#{msg_id}")
+    ],[
+        InlineKeyboardButton("ᴜᴘʟᴏᴀᴅᴇᴅ", callback_data=f"uploaded#{user_id}#{msg_id}"),
+        InlineKeyboardButton("ɴᴏᴛ ᴀᴠᴀɪʟᴀʙʟᴇ", callback_data=f"not_available#{user_id}#{msg_id}")
+    ],[
+        InlineKeyboardButton("ᴜᴘʟᴏᴀᴅᴇᴅ, ᴡʀᴏɴɢ sᴘᴇʟʟɪɴɢ", callback_data=f"spl_wrong#{user_id}#{msg_id}")
+    ],[
+        InlineKeyboardButton("💬 ᴄᴜsᴛᴏᴍ ʀᴇᴘʟʏ", callback_data=f"custom_reply#{user_id}#{msg_id}")
+    ]]
+    try:
+        await req_msg.edit_reply_markup(InlineKeyboardMarkup(buttons))
+    except:
+        pass
+    await query.answer("Cancelled ✖️")
 async def cancel_wrong_spelling(client, query: CallbackQuery):
     _, req_msg_id = query.data.split("#")
     req_msg_id = int(req_msg_id)
@@ -1382,8 +1463,60 @@ async def handle_wrong_spelling_input(client, message):
             reply_markup=InlineKeyboardMarkup(user_buttons),
             reply_to_message_id=msg_id
         )
-            
-async def ai_spell_check(wrong_name):
+
+
+@Client.on_message(filters.reply & filters.chat(REQUEST_CHANNEL))
+async def handle_custom_reply_input(client, message):
+    reply = message.reply_to_message
+    if not reply:
+        return
+    data = CUSTOM_REPLY_WAIT.pop(reply.id, None)
+    if not data:
+        return
+    user_id = data["user_id"]
+    msg_id = data["msg_id"]
+    request_msg = data["request_msg"]
+
+    # Build status button for request channel
+    old_text = request_msg.text or request_msg.caption or "Request"
+    status_btn = [[InlineKeyboardButton("💬 ʀᴇsᴘᴏɴᴅᴇᴅ", callback_data=f"responded_alert#{user_id}")]]
+
+    # Forward the admin's message to the user
+    view_btn = [[InlineKeyboardButton("♻️ ᴠɪᴇᴡ sᴛᴀᴛᴜs ♻️", url=request_msg.link)]]
+    try:
+        await message.copy(chat_id=user_id, reply_markup=InlineKeyboardMarkup(view_btn))
+        sent_ok = True
+    except UserIsBlocked:
+        sent_ok = False
+
+    if not sent_ok:
+        try:
+            await client.copy_message(
+                chat_id=SUPPORT_GROUP,
+                from_chat_id=message.chat.id,
+                message_id=message.id,
+                reply_to_message_id=msg_id,
+                reply_markup=InlineKeyboardMarkup(view_btn)
+            )
+        except:
+            pass
+
+    # Delete admin reply and prompt from channel
+    try:
+        await message.delete()
+    except:
+        pass
+    try:
+        await reply.delete()
+    except:
+        pass
+
+    # Update request message status
+    try:
+        await request_msg.edit_text(f"<s>{old_text}</s>")
+        await request_msg.edit_reply_markup(InlineKeyboardMarkup(status_btn))
+    except:
+        pass
     async def search_movie(wrong_name):
         search_results = imdb.search_movie(wrong_name)
         movie_list = [movie['title'] for movie in search_results]
@@ -1649,23 +1782,25 @@ async def suggestion_timeout_handler(bot, msg):
         user = data["user"]
         query = data["query"]
 
-        mention = (
-            f"<a href='tg://user?id={user.id}'>"
-            f"{user.first_name}</a>"
-        )
-        text = (
-            "<b>#FILE_NOT_FOUND</b>\n\n"
-            f"👤 User: {mention}\n"
-            f"🆔 ID: <code>{user.id}</code>\n"
-            f"🔍 Query: <code>{query}</code>"
-        )
-        try:
-            await bot.send_message(
-                chat_id=NOT_FOUND_FILE_CHANNEL,
-                text=text
+        # Skip file-not-found log if user is an admin
+        if user.id not in ADMINS:
+            mention = (
+                f"<a href='tg://user?id={user.id}'>"
+                f"{user.first_name}</a>"
             )
-        except Exception:
-            pass
+            text = (
+                "<b>#FILE_NOT_FOUND</b>\n\n"
+                f"👤 User: {mention}\n"
+                f"🆔 ID: <code>{user.id}</code>\n"
+                f"🔍 Query: <code>{query}</code>"
+            )
+            try:
+                await bot.send_message(
+                    chat_id=NOT_FOUND_FILE_CHANNEL,
+                    text=text
+                )
+            except Exception:
+                pass
     try:
         await msg.delete()
     except Exception:
