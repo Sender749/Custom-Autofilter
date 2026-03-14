@@ -369,8 +369,8 @@ def _organise_files(docs):
 
 
 # ─── TMDB / IMDB fetchers ─────────────────────────────────────────────────────
-TMDB_IMG  = 'https://image.tmdb.org/t/p/w500'
-TMDB_BACK = 'https://image.tmdb.org/t/p/w1280'
+TMDB_IMG  = 'https://image.tmdb.org/t/p/w342'
+TMDB_BACK = 'https://image.tmdb.org/t/p/w780'
 
 async def _tmdb_fetch(title: str, year: str = '') -> dict | None:
     if not TMDB_API_KEY or not title: return None
@@ -479,7 +479,7 @@ async def _get_meta(title: str, year: str = '') -> dict | None:
     _mcache_set(ck, tmdb); return tmdb
 
 
-# ─── Card builder (requires poster) ──────────────────────────────────────────
+# ─── Card builder ─────────────────────────────────────────────────────────────
 async def _build_card(grp: dict) -> dict | None:
     try:
         rep   = grp['rep']
@@ -488,22 +488,21 @@ async def _build_card(grp: dict) -> dict | None:
         if not title or len(title) < 2: return None
         year  = grp['year'] or extract_year(raw)
         meta  = await _get_meta(title, year)
-        if not meta or not meta.get('poster'): return None   # ← no poster = skip
-
+        # Include card even with no poster — frontend will show a placeholder
         ctype = detect_type(raw,
-                            tmdb_type=meta.get('type'),
-                            tmdb_genres=meta.get('genres',[]),
-                            origin_country=meta.get('origin_country',[]),
-                            orig_lang=meta.get('original_language',''))
+                            tmdb_type=(meta or {}).get('type'),
+                            tmdb_genres=(meta or {}).get('genres',[]),
+                            origin_country=(meta or {}).get('origin_country',[]),
+                            orig_lang=(meta or {}).get('original_language',''))
         return {
             'group_title': title,
             'id':          str(rep['_id']),
-            'name':        meta.get('title') or title,
-            'year':        meta.get('year') or year,
-            'poster':      meta.get('poster'),
-            'backdrop':    meta.get('backdrop'),
-            'rating':      meta.get('rating'),
-            'genres':      (meta.get('genres') or [])[:3],
+            'name':        (meta or {}).get('title') or title,
+            'year':        (meta or {}).get('year') or year,
+            'poster':      (meta or {}).get('poster') or None,
+            'backdrop':    (meta or {}).get('backdrop') or None,
+            'rating':      (meta or {}).get('rating') or None,
+            'genres':      ((meta or {}).get('genres') or [])[:3],
             'type':        ctype,
             'file_count':  len(grp['files']),
         }
@@ -573,15 +572,15 @@ async def miniapp_browse(request):
 
     cards_raw = await asyncio.gather(*[_build_card(g) for g in target_groups], return_exceptions=True)
 
-    seen_posters = set(); seen_titles = set(); results = []
+    seen_titles = set(); seen_posters = set(); results = []
     for c in cards_raw:
         if not isinstance(c, dict): continue
-        p = c.get('poster','')
-        n = (c.get('name') or c.get('group_title','')).lower().strip()
-        # Deduplicate by BOTH poster URL and title name
-        if p in seen_posters or n in seen_titles: continue
+        n = (c.get('name') or c.get('group_title', '')).lower().strip()
+        if not n or n in seen_titles: continue   # skip empty/duplicate titles
+        seen_titles.add(n)
+        p = c.get('poster') or ''
+        if p and p in seen_posters: continue     # skip duplicate poster URLs
         if p: seen_posters.add(p)
-        if n: seen_titles.add(n)
         results.append(c)
         if len(results) >= limit: break
 
@@ -613,12 +612,16 @@ async def miniapp_search(request):
     targets   = list(groups.values())[:60]
     cards_raw = await asyncio.gather(*[_build_card(g) for g in targets], return_exceptions=True)
 
-    seen = set(); results = []
+    seen_t = set(); seen_p = set(); results = []
     for c in cards_raw:
         if not isinstance(c, dict): continue
-        p = c.get('poster','')
-        if p in seen: continue
-        seen.add(p); results.append(c)
+        n = (c.get('name') or c.get('group_title', '')).lower().strip()
+        if not n or n in seen_t: continue
+        seen_t.add(n)
+        p = c.get('poster') or ''
+        if p and p in seen_p: continue
+        if p: seen_p.add(p)
+        results.append(c)
 
     return json_resp({'ok': True, 'results': results, 'total': len(results)})
 
