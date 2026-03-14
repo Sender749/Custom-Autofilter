@@ -120,7 +120,7 @@ SEASONS = [("sᴇᴀsᴏɴ 𝟷", "s01"), ("sᴇᴀsᴏɴ 𝟸", "s02"), ("sᴇ�
 
 # Stream Settings 
 MINI_APP_URL = os.environ.get('MINI_APP_URL', 'https://precious-mab-filetokensender-fdc78bed.koyeb.app/miniapp')
-IS_PREMIUM_STREAM = is_enabled('IS_PREMIUM_STREAM', False) # True To Allow Stream For Premium User Only
+IS_PREMIUM_STREAM = is_enabled('IS_PREMIUM_STREAM', False) # True To Allow Stream For Premium User Only 
 BIN_CHANNEL = environ.get("BIN_CHANNEL", "-1002262450769") # Channel Where Files sent For stream
 if len(BIN_CHANNEL) == 0:
     print('Error BIN_CHANNEL is missing, exiting now')
