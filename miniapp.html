@@ -410,13 +410,13 @@ async function loadTab(tab, reset = false, forceMode = null) {
   if (reset) grid.innerHTML = '';
 
   if (data && data.ok && data.results && data.results.length) {
-    // Deduplicate by BOTH poster URL and normalised title — prevents same movie twice
+    // Deduplicate by title — never discard a card just because poster is missing
     const fresh = data.results.filter(c => {
-      if (!c.poster) return false;
-      const titleKey = (c.name || c.group_title || '').toLowerCase().replace(/[^a-z0-9]/g,'');
-      if (st.seenPosters.has(c.poster) || st.seenTitles.has(titleKey)) return false;
-      st.seenPosters.add(c.poster);
-      if (titleKey) st.seenTitles.add(titleKey);
+      const tk = (c.name || c.group_title || '').toLowerCase().replace(/[^a-z0-9]/g,'');
+      if (!tk || st.seenTitles.has(tk)) return false;
+      st.seenTitles.add(tk);
+      if (c.poster && st.seenPosters.has(c.poster)) return false;
+      if (c.poster) st.seenPosters.add(c.poster);
       return true;
     });
     st.cards.push(...fresh);
@@ -453,11 +453,11 @@ async function loadMore(tab) {
   if (data && data.ok && data.results && data.results.length) {
     const grid  = document.getElementById(tab + 'Grid');
     const fresh = data.results.filter(c => {
-      if (!c.poster) return false;
-      const titleKey = (c.name || c.group_title || '').toLowerCase().replace(/[^a-z0-9]/g,'');
-      if (st.seenPosters.has(c.poster) || st.seenTitles.has(titleKey)) return false;
-      st.seenPosters.add(c.poster);
-      if (titleKey) st.seenTitles.add(titleKey);
+      const tk = (c.name || c.group_title || '').toLowerCase().replace(/[^a-z0-9]/g,'');
+      if (!tk || st.seenTitles.has(tk)) return false;
+      st.seenTitles.add(tk);
+      if (c.poster && st.seenPosters.has(c.poster)) return false;
+      if (c.poster) st.seenPosters.add(c.poster);
       return true;
     });
     st.cards.push(...fresh);
@@ -583,11 +583,13 @@ function buildMC(item) {
     ? '<span class="bdg bdg-purple" style="display:block;margin-top:2px">ANIME</span>'
     : (item.type === 'series' || item.type === 'tv')
       ? '<span class="bdg bdg-blue" style="display:block;margin-top:2px">SERIES</span>' : '';
-  div.innerHTML = cnt +
-    `<img class="mc-img" src="${esc(item.poster)}" alt="${name}" loading="lazy"
-       onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
-     <div class="mc-nop" style="display:none">${name}</div>
-     <div class="mc-info">
+  const posterHtml = item.poster
+    ? `<img class="mc-img" src="${esc(item.poster)}" alt="${name}" loading="lazy"
+         onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+       <div class="mc-nop" style="display:none">${name}</div>`
+    : `<div class="mc-nop">${name}</div>`;
+  div.innerHTML = cnt + posterHtml +
+    `<div class="mc-info">
        <div class="mc-title">${name}</div>
        <div class="mc-meta">${yr}${rat}</div>
        ${badge}
@@ -607,11 +609,13 @@ function buildLC(item) {
       ? '<span class="bdg bdg-blue">SERIES</span>'
       : '<span class="bdg bdg-green">MOVIE</span>';
   const fc    = item.file_count > 1 ? ` · ${item.file_count} files` : '';
-  div.innerHTML =
-    `<img class="lc-img" src="${esc(item.poster)}" alt="${name}" loading="lazy"
-       onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
-     <div class="lc-nop" style="display:none">${name.slice(0,16)}</div>
-     <div class="lc-info">
+  const lcPoster = item.poster
+    ? `<img class="lc-img" src="${esc(item.poster)}" alt="${name}" loading="lazy"
+         onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+       <div class="lc-nop" style="display:none">${name.slice(0,16)}</div>`
+    : `<div class="lc-nop">${name.slice(0,16)}</div>`;
+  div.innerHTML = lcPoster +
+    `<div class="lc-info">
        <div class="lc-title">${name}</div>
        <div class="lc-sub">${item.year || ''}${fc}</div>
        <div class="lc-bdg">${badge}${rat}</div>
