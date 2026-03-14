@@ -46,14 +46,6 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
 .clr-btn{position:absolute;right:9px;top:50%;transform:translateY(-50%);
   background:none;border:none;color:var(--muted);font-size:14px;cursor:pointer;display:none;}
 
-/* chips */
-.chips{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;padding-bottom:8px}
-.chips::-webkit-scrollbar{display:none}
-.chip{flex-shrink:0;padding:4px 11px;border-radius:99px;background:var(--card2);
-  border:1px solid var(--border);color:var(--text2);font-size:11px;font-weight:600;
-  cursor:pointer;white-space:nowrap;transition:all .15s;user-select:none;}
-.chip.active{background:rgba(245,166,35,.18);border-color:rgba(245,166,35,.45);color:var(--accent);}
-
 /* ── TABS ───────────────────────────────────────────────── */
 .tabs{flex-shrink:0;display:flex;background:var(--surface);
   border-bottom:1px solid var(--border);overflow-x:auto;scrollbar-width:none;}
@@ -277,17 +269,15 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
     </div>
     <div class="srch-wrap">
       <span class="srch-ic">⌕</span>
-      <input type="text" id="searchInput" placeholder="Search movies, series, anime…"/>
+      <input type="text" id="searchInput" placeholder="Search movies, series…"/>
       <button class="clr-btn" id="clearBtn" onclick="clearSearch()">✕</button>
     </div>
-    <div class="chips" id="chipsWrap"></div>
   </div>
 
   <!-- TABS -->
   <div class="tabs">
     <div class="tab active" data-tab="movies"  onclick="switchTab('movies',this)">🎬 Movies</div>
     <div class="tab"        data-tab="series"  onclick="switchTab('series',this)">📺 Series</div>
-    <div class="tab"        data-tab="anime"   onclick="switchTab('anime',this)">✨ Anime</div>
     <div class="tab"        data-tab="search" id="searchTab" style="display:none" onclick="switchTab('search',this)">🔍 Search</div>
   </div>
 
@@ -326,27 +316,11 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
       <div class="sentinel" id="seriesSen"><div class="ld-spin" id="seriesSpin"></div></div>
     </div>
 
-    <!-- Anime screen -->
-    <div class="screen" id="screen-anime">
-      <div class="toolbar">
-        <div class="tb-title">Anime</div>
-        <div class="vbtns">
-          <button class="vbtn active" id="animeGB" onclick="setView('anime','grid')">⊞</button>
-          <button class="vbtn"        id="animeLB" onclick="setView('anime','list')">≡</button>
-        </div>
-        <button class="rfr-btn" id="animeRfr" onclick="doRefresh('anime')" title="Refresh">
-          <span class="rfi">⟳</span>
-        </button>
-      </div>
-      <div class="grid" id="animeGrid"></div>
-      <div class="sentinel" id="animeSen"><div class="ld-spin" id="animeSpin"></div></div>
-    </div>
-
     <!-- Search screen -->
     <div class="screen" id="screen-search">
       <div id="searchResults">
         <div class="empty"><div class="empty-ttl">Search anything</div>
-          <div class="empty-sub">Movies · Series · Anime</div></div>
+          <div class="empty-sub">Movies · Series</div></div>
       </div>
     </div>
 
@@ -367,25 +341,14 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
 
 <script>
 // ─── CONFIG ────────────────────────────────────────────────────────────────
-const API_BASE     = 'https://precious-mab-filetokensender-fdc78bed.koyeb.app/';
+const API_BASE     = 'https://precious-mab-filetokensender-fdc78bed.koyeb.app';
 const BOT_USERNAME = 'Navex_MoviesHub_Bot';
-
-const QUICK_CHIPS = [
-  { label:'Bollywood',     query:'bollywood hindi',   strip:['bollywood','hindi']   },
-  { label:'Hollywood',     query:'hollywood english', strip:['hollywood','english']  },
-  { label:'Punjabi',       query:'punjabi',           strip:[]                       },
-  { label:'Latest 2025',   query:'2025',              strip:[]                       },
-  { label:'Latest 2024',   query:'2024',              strip:[]                       },
-  { label:'Adult',         query:'adult',             strip:[]                       },
-  { label:'Hentai',        query:'hentai',            strip:[]                       },
-];
 
 // ─── STATE ─────────────────────────────────────────────────────────────────
 const tg = window.Telegram.WebApp;
 tg.ready(); tg.expand();
 
 let currentTab   = 'movies';
-let activeChip   = null;
 let preChipTab   = 'movies';
 let searchTimer  = null;
 
@@ -393,13 +356,11 @@ let searchTimer  = null;
 const TS = {
   movies: { cards:[], page:0, loading:false, hasMore:true, seenPosters:new Set(), seenTitles:new Set(), mode:'recent' },
   series: { cards:[], page:0, loading:false, hasMore:true, seenPosters:new Set(), seenTitles:new Set(), mode:'recent' },
-  anime:  { cards:[], page:0, loading:false, hasMore:true, seenPosters:new Set(), seenTitles:new Set(), mode:'recent' },
 };
-const viewMode = { movies:'grid', series:'grid', anime:'grid' };
+const viewMode = { movies:'grid', series:'grid' };
 
 // ─── INIT ──────────────────────────────────────────────────────────────────
 window.addEventListener('load', async () => {
-  buildChips();
   await loadTab('movies', true);
   hideLoader();
   setupScroll();
@@ -423,49 +384,6 @@ async function api(path) {
     clearTimeout(t);
     return r.ok ? await r.json() : null;
   } catch(e) { return null; }
-}
-
-// ─── CHIPS ─────────────────────────────────────────────────────────────────
-function buildChips() {
-  const w = document.getElementById('chipsWrap');
-  QUICK_CHIPS.forEach(chip => {
-    const el = document.createElement('div');
-    el.className = 'chip';
-    el.textContent = chip.label;
-    el.onclick = () => toggleChip(chip, el);
-    w.appendChild(el);
-  });
-}
-
-function stripWords(q, words) {
-  let s = q;
-  for (const w of words)
-    s = s.replace(new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '\\b','gi'),'');
-  return s.replace(/\s{2,}/g,' ').trim();
-}
-
-async function toggleChip(chip, el) {
-  if (activeChip === chip.label) {
-    activeChip = null;
-    el.classList.remove('active');
-    document.getElementById('searchInput').value = '';
-    document.getElementById('clearBtn').style.display = 'none';
-    document.getElementById('searchTab').style.display = 'none';
-    tg.HapticFeedback.selectionChanged();
-    switchTab(preChipTab, document.querySelector(`[data-tab="${preChipTab}"]`));
-    return;
-  }
-  document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
-  el.classList.add('active');
-  activeChip = chip.label;
-  preChipTab = currentTab !== 'search' ? currentTab : preChipTab;
-  tg.HapticFeedback.impactOccurred('light');
-  const q = stripWords(chip.query, chip.strip);
-  if (!q) { showToast('Empty query'); activeChip=null; el.classList.remove('active'); return; }
-  document.getElementById('searchInput').value = chip.label;
-  document.getElementById('clearBtn').style.display = 'block';
-  await runSearch(q, `"${chip.label}"`);
-  showSrchTab();
 }
 
 // ─── TAB LOADING ───────────────────────────────────────────────────────────
@@ -564,7 +482,7 @@ async function doRefresh(tab) {
 }
 
 function setupScroll() {
-  ['movies','series','anime'].forEach(tab => {
+  ['movies','series'].forEach(tab => {
     const obs = new IntersectionObserver(entries => {
       if (entries[0].isIntersecting && currentTab === tab) loadMore(tab);
     }, {rootMargin:'280px'});
@@ -596,8 +514,6 @@ document.getElementById('searchInput').addEventListener('input', function() {
   const q = this.value.trim();
   document.getElementById('clearBtn').style.display = q ? 'block' : 'none';
   if (!q) {
-    document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
-    activeChip = null;
     document.getElementById('searchTab').style.display = 'none';
     switchTab(preChipTab || 'movies', document.querySelector(`[data-tab="${preChipTab||'movies'}"]`));
     return;
@@ -610,8 +526,6 @@ document.getElementById('searchInput').addEventListener('input', function() {
 function clearSearch() {
   document.getElementById('searchInput').value = '';
   document.getElementById('clearBtn').style.display = 'none';
-  document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
-  activeChip = null;
   document.getElementById('searchTab').style.display = 'none';
   switchTab('movies', document.querySelector('[data-tab="movies"]'));
 }
@@ -629,8 +543,6 @@ function showSrchTab() {
 // ─── TAB SWITCH ────────────────────────────────────────────────────────────
 function switchTab(tab, el) {
   if (tab !== 'search') {
-    document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
-    activeChip = null;
     document.getElementById('searchTab').style.display = 'none';
   }
   currentTab = tab;
@@ -641,7 +553,6 @@ function switchTab(tab, el) {
   document.getElementById('screen-' + tab).classList.add('active');
   tg.HapticFeedback.selectionChanged();
   if (tab !== 'search') {
-    // If this tab has never been loaded, load it now (recent mode)
     if (TS[tab].cards.length === 0 && !TS[tab].loading) loadTab(tab, true);
   }
 }
