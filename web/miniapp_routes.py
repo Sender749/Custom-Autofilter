@@ -38,7 +38,7 @@ try:
         get_search_results, get_file_details,
         is_second_db_configured,
     )
-    from utils import get_size, temp
+    from utils import temp
     from info import TMDB_API_KEY, BOT_TOKEN
     DB_AVAILABLE = True
 except ImportError as _ie:
