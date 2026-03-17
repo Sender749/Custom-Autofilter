@@ -6,9 +6,9 @@ from collections import defaultdict
 from plugins.helper.Imdbposter import get_movie_detailsx, fetch_image, get_movie_details
 from database.users_chats_db import db
 from pyrogram import Client, filters, enums
-from info import CHANNELS, MOVIE_UPDATE_CHANNEL, LINK_PREVIEW, ABOVE_PREVIEW, LANDSCAPE_POSTER, TMDB_POSTER
+from info import CHANNELS, MOVIE_UPDATE_CHANNEL, LINK_PREVIEW, ABOVE_PREVIEW, LANDSCAPE_POSTER, TMDB_POSTER, ADMINS
 from Script import script
-from database.ia_filterdb import save_file
+from database.ia_filterdb import save_file, get_search_results
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from utils import temp
 from pymongo.errors import PyMongoError, DuplicateKeyError
@@ -411,6 +411,145 @@ async def update_movie_message(bot, base_name):
             await send_movie_update(bot, base_name)
     except Exception as e:
         logger.error(f"Failed to update movie message: {e}")
+
+@Client.on_message(filters.command("m") & filters.private & filters.user(ADMINS))
+async def manual_movie_update(bot, message):
+    """
+    /m {movie name} {release year}
+    Admin command to manually send a movie update message by searching the database.
+    """
+    args = message.text.strip().split(None, 1)
+    if len(args) < 2:
+        return await message.reply(
+            "<b>Usage:</b> <code>/m {movie name} {year}</code>\n\n"
+            "<b>Example:</b> <code>/m Pushpa 2025</code>",
+            parse_mode=enums.ParseMode.HTML
+        )
+
+    full_query = args[1].strip()
+
+    # Try to extract trailing year (4-digit number at end of query)
+    year_match = re.search(r'\b((?:19|20)\d{2})\s*$', full_query)
+    if year_match:
+        movie_name = full_query[:year_match.start()].strip()
+        year = year_match.group(1)
+    else:
+        movie_name = full_query
+        year = None
+
+    if not movie_name:
+        return await message.reply("❌ Please provide a movie name.")
+
+    status_msg = await message.reply(f"🔍 Searching database for <b>{movie_name}</b>{f' ({year})' if year else ''}...", parse_mode=enums.ParseMode.HTML)
+
+    try:
+        # Search DB using existing search function
+        search_query = f"{movie_name} {year}" if year else movie_name
+        files, _, total = await get_search_results(search_query, max_results=100, offset=0)
+
+        if not files:
+            # Try with just movie name if year search returned nothing
+            if year:
+                files, _, total = await get_search_results(movie_name, max_results=100, offset=0)
+
+        if not files:
+            return await status_msg.edit(f"❌ No files found for <b>{movie_name}</b>{f' ({year})' if year else ''} in database.", parse_mode=enums.ParseMode.HTML)
+
+        await status_msg.edit(f"✅ Found <b>{total}</b> file(s). Building update message...", parse_mode=enums.ParseMode.HTML)
+
+        # Build a synthetic base_name for lookup/creation
+        base_name = movie_name.title()
+        if year:
+            base_name = f"{base_name} {year}"
+
+        # Build file_data list from found files (same structure as auto handler)
+        file_entries = []
+        for f in files:
+            fname = f.get("file_name", "")
+            cap = f.get("caption", "") or ""
+            info = extract_media_info(fname, cap)
+            file_entries.append({
+                "filename": fname,
+                "processed": info["processed"],
+                "quality": info["quality"],
+                "language": info["language"],
+                "ott_platform": info["ott_platform"],
+                "timestamp": datetime.now(),
+                "tag": info["tag"],
+                "season": info["season"],
+                "episode": info["episode"]
+            })
+
+        # Fetch movie details for poster / rating / genres
+        global error_tmdb
+        error_tmdb = False
+        if TMDB_POSTER:
+            details = await get_movie_detailsx(base_name)
+            if details.get("error"):
+                error_tmdb = True
+                details = await get_movie_details(base_name) or {}
+        else:
+            details = await get_movie_details(base_name) or {}
+
+        raw_genres = details.get("genres", "N/A")
+        if isinstance(raw_genres, str):
+            genre_list = [g.strip() for g in raw_genres.split(",")]
+            genres = ", ".join(g for g in genre_list if g in STANDARD_GENRES) or "N/A"
+        else:
+            genres = ", ".join(g for g in raw_genres if g in STANDARD_GENRES) or "N/A"
+
+        movie_doc = {
+            "_id": base_name,
+            "files": file_entries,
+            "poster_url": details.get("backdrop_url") if LANDSCAPE_POSTER and TMDB_POSTER and not error_tmdb else details.get("poster_url"),
+            "genres": genres,
+            "rating": details.get("rating", "N/A"),
+            "imdb_url": details.get("url", "") if not TMDB_POSTER else details.get("tmdb_url", ""),
+            "year": year or details.get("year"),
+            "tag": "#SERIES" if any(fe["tag"] == "#SERIES" for fe in file_entries) else "#MOVIE",
+            "ott_platform": file_entries[0]["ott_platform"] if file_entries else "N/A",
+            "message_id": None,
+            "is_photo": False
+        }
+
+        # Check if a movie_updates doc already exists and update it, else insert fresh
+        if not hasattr(db, 'movie_updates'):
+            db.movie_updates = db.db.movie_updates
+
+        existing = await db.movie_updates.find_one({"_id": base_name})
+        if existing:
+            # Update files list with any new entries
+            existing_fnames = {fe["filename"] for fe in existing["files"]}
+            new_entries = [fe for fe in file_entries if fe["filename"] not in existing_fnames]
+            if new_entries:
+                await db.movie_updates.update_one(
+                    {"_id": base_name},
+                    {"$push": {"files": {"$each": new_entries}}}
+                )
+            movie_doc = await db.movie_updates.find_one({"_id": base_name})
+        else:
+            try:
+                await db.movie_updates.insert_one(movie_doc)
+            except DuplicateKeyError:
+                movie_doc = await db.movie_updates.find_one({"_id": base_name})
+
+        await status_msg.edit(f"📤 Sending update to channel...", parse_mode=enums.ParseMode.HTML)
+        msg = await send_movie_update(bot, base_name)
+
+        if msg:
+            await status_msg.edit(
+                f"✅ Movie update sent successfully!\n"
+                f"🎬 <b>{base_name}</b>\n"
+                f"📁 Files: <b>{len(file_entries)}</b>",
+                parse_mode=enums.ParseMode.HTML
+            )
+        else:
+            await status_msg.edit("❌ Failed to send movie update. Check logs for details.")
+
+    except Exception as e:
+        logger.exception("Error in /m command: %s", e)
+        await status_msg.edit(f"❌ Error: <code>{e}</code>", parse_mode=enums.ParseMode.HTML)
+
 
 def generate_movie_message(movie_doc, base_name):
     all_qualities = set()
