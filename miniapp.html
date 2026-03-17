@@ -43,13 +43,7 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
   background:none;border:none;color:var(--muted);font-size:15px;cursor:pointer;display:none;}
 
 /* QUICK CHIPS */
-.chips-wrap{display:flex;gap:7px;overflow-x:auto;scrollbar-width:none;padding:0 0 10px;-webkit-overflow-scrolling:touch;}
-.chips-wrap::-webkit-scrollbar{display:none}
-.chip{flex-shrink:0;padding:5px 12px;border-radius:99px;background:var(--card2);border:1px solid var(--border);
-  color:var(--text2);font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap;
-  transition:background .15s,border-color .15s,color .15s;user-select:none;}
-.chip.active{background:rgba(232,160,32,.2);border-color:rgba(232,160,32,.5);color:var(--accent);}
-.chip:active{transform:scale(.96)}
+
 
 /* TABS */
 .tabs{flex-shrink:0;display:flex;border-bottom:1px solid var(--border);
@@ -264,16 +258,14 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
     </div>
     <div class="search-wrap">
       <span class="search-icon">&#9906;</span>
-      <input type="text" id="searchInput" placeholder="Search movies, series, anime..."/>
+      <input type="text" id="searchInput" placeholder="Search movies, series..."/>
       <button class="clear-btn" id="clearBtn" onclick="clearSearch()">&#10005;</button>
     </div>
-    <div class="chips-wrap" id="chipsWrap"></div>
   </div>
 
   <div class="tabs">
     <div class="tab active" data-tab="movies" onclick="switchTab('movies',this)">&#127916; Movies</div>
     <div class="tab" data-tab="series" onclick="switchTab('series',this)">&#128250; Series</div>
-    <div class="tab" data-tab="anime" onclick="switchTab('anime',this)">&#10024; Anime</div>
     <div class="tab" data-tab="search" id="searchTab" style="display:none" onclick="switchTab('search',this)">&#128269; Search</div>
   </div>
 
@@ -309,21 +301,6 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
       </div>
     </div>
 
-    <div class="screen" id="screen-anime">
-      <div class="toolbar">
-        <div class="toolbar-title">Anime</div>
-        <div class="view-toggle">
-          <button class="view-btn active" id="animeGridBtn" onclick="setView('anime','grid')">&#9638;</button>
-          <button class="view-btn" id="animeListBtn" onclick="setView('anime','list')">&#8801;</button>
-        </div>
-        <button class="refresh-btn" id="animeRefreshBtn" onclick="refreshTab('anime')"><span class="refresh-icon">&#8635;</span></button>
-      </div>
-      <div class="grid" id="animeGrid"></div>
-      <div class="load-more-sentinel" id="animeSentinel">
-        <div class="load-more-spinner" id="animeSpinner"></div>
-      </div>
-    </div>
-
     <div class="screen" id="screen-search">
       <div id="searchResults">
         <div class="empty-state">
@@ -351,37 +328,22 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
 const API_BASE     = "https://precious-mab-filetokensender-fdc78bed.koyeb.app";
 const BOT_USERNAME = "Navex_MoviesHub_Bot";
 
-// ─── ADMIN: configure quick-search chips here ────────────────────────────────
-// label      : text shown on chip
-// query      : raw query string
-// filterWords: words removed from query before searching (case-insensitive)
-const QUICK_CHIPS = [
-  { label: "Bollywood",        query: "bollywood hindi",  filterWords: ["bollywood", "hindi"] },
-  { label: "Hollywood",        query: "hollywood english",filterWords: ["hollywood", "english"] },
-  { label: "Punjabi Movies",   query: "punjabi",          filterWords: [] },
-  { label: "Latest 2026",      query: "2026",             filterWords: [] },
-  { label: "Adult Movies",     query: "adult",            filterWords: [] },
-  { label: "Hentai",           query: "hentai",           filterWords: [] },
-];
-
 const tg = window.Telegram.WebApp;
 tg.ready();
 tg.expand();
 
 let currentTab   = 'movies';
-let viewModes    = { movies: 'grid', series: 'grid', anime: 'grid' };
+let viewModes    = { movies: 'grid', series: 'grid' };
 let searchDebounce = null;
-let activeChip   = null;
-let preChipTab   = 'movies';
+let preSearchTab = 'movies';
 let tabState     = {
   movies: { files: [], page: 0, loading: false, hasMore: true, loaded: false },
   series: { files: [], page: 0, loading: false, hasMore: true, loaded: false },
-  anime:  { files: [], page: 0, loading: false, hasMore: true, loaded: false },
 };
 
+// Always force fresh data on every open
 window.addEventListener('load', async () => {
-  buildChips();
-  await loadTab('movies');
+  await loadTab('movies', true);
   hideLoader();
   setupInfiniteScroll();
 });
@@ -406,64 +368,6 @@ async function apiFetch(path) {
   } catch(e) { return null; }
 }
 
-// ─── CHIPS ────────────────────────────────────────────────────────────────────
-function buildChips() {
-  const wrap = document.getElementById('chipsWrap');
-  QUICK_CHIPS.forEach(chip => {
-    const el = document.createElement('div');
-    el.className = 'chip';
-    el.textContent = chip.label;
-    el.dataset.label = chip.label;
-    el.onclick = () => toggleChip(chip, el);
-    wrap.appendChild(el);
-  });
-}
-
-function applyFilterWords(query, filterWords) {
-  let q = query;
-  for (const fw of (filterWords || [])) {
-    q = q.replace(new RegExp('\\b' + fw.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '\\b', 'gi'), '');
-  }
-  return q.replace(/\s{2,}/g,' ').trim();
-}
-
-async function toggleChip(chip, el) {
-  if (activeChip === chip.label) {
-    // Deselect
-    activeChip = null;
-    el.classList.remove('active');
-    document.getElementById('searchInput').value = '';
-    document.getElementById('clearBtn').style.display = 'none';
-    tg.HapticFeedback.selectionChanged();
-    document.getElementById('searchTab').style.display = 'none';
-    switchTab(preChipTab, document.querySelector('[data-tab="' + preChipTab + '"]'));
-    return;
-  }
-  document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
-  el.classList.add('active');
-  activeChip = chip.label;
-  preChipTab = currentTab !== 'search' ? currentTab : preChipTab;
-  tg.HapticFeedback.impactOccurred('light');
-
-  const q = applyFilterWords(chip.query, chip.filterWords);
-  if (!q) { showToast('Empty query'); activeChip = null; el.classList.remove('active'); return; }
-
-  document.getElementById('searchInput').value = chip.label;
-  document.getElementById('clearBtn').style.display = 'block';
-  await runSearch(q, '"' + chip.label + '"');
-  showSearchTab();
-}
-
-function showSearchTab() {
-  const st = document.getElementById('searchTab');
-  st.style.display = '';
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-  st.classList.add('active');
-  document.getElementById('screen-search').classList.add('active');
-  currentTab = 'search';
-}
-
 // ─── TAB LOADING ──────────────────────────────────────────────────────────────
 async function loadTab(tab, reset) {
   const st  = tabState[tab];
@@ -478,7 +382,8 @@ async function loadTab(tab, reset) {
   }
   grid.innerHTML = skeletonGrid(12);
 
-  const ts   = reset ? ('&ts=' + Date.now()) : '';
+  // Always pass ts to bust server-side cache on load
+  const ts = '&ts=' + Date.now();
   st.loading = true;
   const data = await apiFetch('/miniapp/browse?type=' + tab + '&page=' + st.page + '&limit=24' + ts);
   st.loading = false;
@@ -533,7 +438,7 @@ async function refreshTab(tab) {
 }
 
 function setupInfiniteScroll() {
-  ['movies','series','anime'].forEach(tab => {
+  ['movies','series'].forEach(tab => {
     const obs = new IntersectionObserver(entries => {
       if (entries[0].isIntersecting && currentTab === tab) loadMoreTab(tab);
     }, { rootMargin: '300px' });
@@ -541,44 +446,44 @@ function setupInfiniteScroll() {
   });
 }
 
-// ─── FUZZY SEARCH ─────────────────────────────────────────────────────────────
+// ─── SEARCH — uses same backend get_search_results via /miniapp/search ─────────
 function normalizeQ(s) {
-  // collapse repeated letters, strip extra spaces, lowercase
   return s.toLowerCase()
-    .replace(/(.)\1+/g,'$1')       // "moovie" -> "movie"
-    .replace(/[^a-z0-9\u0080-\uffff]+/g,' ')
+    .replace(/(.)\\1+/g,'$1')
+    .replace(/[^a-z0-9\\u0080-\\uffff]+/g,' ')
     .trim();
 }
 
-async function runSearch(query, displayLabel) {
+async function runSearch(query) {
   const container = document.getElementById('searchResults');
   container.innerHTML = skeletonGrid(8);
 
-  // Try original query first, then fuzzy normalized version
+  // Primary search
   let data = await apiFetch('/miniapp/search?q=' + encodeURIComponent(query) + '&fuzzy=1');
-  if ((!data || !data.results || !data.results.length)) {
+  // If nothing, try fuzzy-normalized form
+  if (!data || !data.results || !data.results.length) {
     const fuzzyQ = normalizeQ(query);
     if (fuzzyQ !== query.toLowerCase().trim()) {
       data = await apiFetch('/miniapp/search?q=' + encodeURIComponent(fuzzyQ) + '&fuzzy=1');
     }
   }
 
-  const label = displayLabel || ('"' + query + '"');
   if (data && data.ok && data.results && data.results.length) {
-    container.innerHTML = '<div style="font-family:\'Bebas Neue\',sans-serif;font-size:20px;letter-spacing:1px;color:var(--text);margin-bottom:10px">Results for ' + esc(label) + ' <small style="font-size:12px;color:var(--muted);font-family:\'DM Sans\',sans-serif">' + (data.total||data.results.length) + ' found</small></div>';
+    container.innerHTML = '<div style="font-family:\'Bebas Neue\',sans-serif;font-size:20px;letter-spacing:1px;color:var(--text);margin-bottom:10px">Results for \'' + esc(query) + '\' <small style="font-size:12px;color:var(--muted);font-family:\'DM Sans\',sans-serif">' + (data.total||data.results.length) + ' found</small></div>';
     const grid = document.createElement('div');
     grid.className = 'grid';
     container.appendChild(grid);
     renderGrid(grid, data.results, 'grid');
+    enrichCardsWithPosters(data.results);
   } else {
-    container.innerHTML = emptyState('Nothing found', 'No results for ' + esc(label));
+    container.innerHTML = emptyState('Nothing found', 'No results for "' + esc(query) + '"');
   }
 }
 
 async function doSearch(q) {
   if (!q) {
     document.getElementById('searchResults').innerHTML =
-      '<div class="empty-state"><div class="empty-title">Search for anything</div><div class="empty-sub">Movies, Series, Anime...</div></div>';
+      '<div class="empty-state"><div class="empty-title">Search for anything</div><div class="empty-sub">Movies, Series...</div></div>';
     return;
   }
   await runSearch(q);
@@ -641,10 +546,8 @@ function buildCard(item) {
     : '<div class="card-no-poster">' + name + '</div>';
   const rating  = item.rating ? '<span class="card-rating">&#9733; ' + item.rating + '</span>' : '';
   const year    = item.year   ? '<span class="card-year">' + item.year + '</span>' : '';
-  const typeBadge = item.type === 'anime'
-    ? '<span class="badge badge-purple" style="margin-top:3px;display:inline-block">ANIME</span>'
-    : (item.type==='tv'||item.type==='series')
-      ? '<span class="badge badge-blue" style="margin-top:3px;display:inline-block">TV</span>' : '';
+  const typeBadge = (item.type==='tv'||item.type==='series')
+    ? '<span class="badge badge-blue" style="margin-top:3px;display:inline-block">TV</span>' : '';
   div.innerHTML = count + posterHtml + '<div class="card-info"><div class="card-title">' + name + '</div><div class="card-meta">' + year + rating + '</div>' + typeBadge + '</div>';
   return div;
 }
@@ -656,8 +559,7 @@ function buildListCard(item) {
   const name   = esc(item.name || item.group_title);
   const genres = (item.genres||[]).slice(0,2).map(g=>'<span class="badge badge-gray">'+esc(g)+'</span>').join('');
   const rating = item.rating ? '<span class="badge badge-gold">&#9733; ' + item.rating + '</span>' : '';
-  const type   = item.type==='anime' ? '<span class="badge badge-purple">ANIME</span>'
-    : (item.type==='tv'||item.type==='series') ? '<span class="badge badge-blue">TV</span>' : '<span class="badge badge-green">Movie</span>';
+  const type   = (item.type==='tv'||item.type==='series') ? '<span class="badge badge-blue">TV</span>' : '<span class="badge badge-green">Movie</span>';
   let poster   = item.poster
     ? '<img class="list-poster" src="' + item.poster + '" alt="' + name + '" loading="lazy" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'"><div class="list-no-poster" style="display:none">' + name.slice(0,18) + '</div>'
     : '<div class="list-no-poster">' + name.slice(0,18) + '</div>';
@@ -701,7 +603,7 @@ function renderDetail(data) {
     : '';
 
   const posterHtml = poster
-    ? '<img class="detail-poster" src="' + poster + '" alt="' + esc(title) + '" onerror="this.outerHTML=\'<div class=\\\'detail-poster-placeholder\\\'>' + esc(title).slice(0,25) + '</div>\'">'
+    ? '<img class="detail-poster" src="' + poster + '" alt="' + esc(title) + '" onerror="this.outerHTML=\'<div class=\\"detail-poster-placeholder\\">' + esc(title).slice(0,25) + '</div>\'">'
     : '<div class="detail-poster-placeholder">' + esc(title).slice(0,25) + '</div>';
 
   const ratingHtml = rating ? '<span class="rating-pill">&#9733; ' + rating + ' <span style="font-weight:400;color:var(--muted)">/10</span></span>' : '';
@@ -731,7 +633,7 @@ function renderDetail(data) {
   let filesHtml = '';
   if (isSeries && data.seasons) {
     const seasonNums = Object.keys(data.seasons).map(Number).sort((a,b)=>a-b);
-    const tabsHtml = seasonNums.map(s=>'<div class="s-tab'+(s===seasonNums[0]?' active':'')+'" onclick="switchSeason('+s+',this)">'+(s===0?'Extras':'S'+String(s).padStart(2,'0'))+'</div>').join('');
+    const tabsHtml = seasonNums.map(s=>'<div class="s-tab'+(s===seasonNums[0]?' active':'')+'\" onclick=\"switchSeason('+s+',this)\">'+(s===0?'Extras':'S'+String(s).padStart(2,'0'))+'</div>').join('');
     let panels = '', totalFiles = 0;
     for (const sNum of seasonNums) {
       const epData = data.seasons[String(sNum)];
@@ -824,8 +726,6 @@ document.getElementById('detailPanel').addEventListener('touchend', e => {
 // ─── TABS ─────────────────────────────────────────────────────────────────────
 function switchTab(tab, el) {
   if (tab !== 'search') {
-    document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
-    activeChip = null;
     document.getElementById('searchTab').style.display = 'none';
   }
   currentTab = tab;
@@ -844,15 +744,20 @@ document.getElementById('searchInput').addEventListener('input', function() {
   document.getElementById('clearBtn').style.display = q ? 'block' : 'none';
 
   if (!q) {
-    document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
-    activeChip = null;
     document.getElementById('searchTab').style.display = 'none';
-    switchTab(preChipTab || 'movies', document.querySelector('[data-tab="' + (preChipTab||'movies') + '"]'));
+    switchTab(preSearchTab || 'movies', document.querySelector('[data-tab="' + (preSearchTab||'movies') + '"]'));
     return;
   }
   if (currentTab !== 'search') {
-    preChipTab = currentTab !== 'search' ? currentTab : preChipTab;
-    showSearchTab();
+    preSearchTab = currentTab !== 'search' ? currentTab : preSearchTab;
+    // show search tab
+    const st = document.getElementById('searchTab');
+    st.style.display = '';
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    st.classList.add('active');
+    document.getElementById('screen-search').classList.add('active');
+    currentTab = 'search';
   }
   clearTimeout(searchDebounce);
   searchDebounce = setTimeout(() => doSearch(q), 400);
@@ -861,8 +766,6 @@ document.getElementById('searchInput').addEventListener('input', function() {
 function clearSearch() {
   document.getElementById('searchInput').value = '';
   document.getElementById('clearBtn').style.display = 'none';
-  document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
-  activeChip = null;
   document.getElementById('searchTab').style.display = 'none';
   switchTab('movies', document.querySelector('[data-tab="movies"]'));
 }
