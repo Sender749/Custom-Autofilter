@@ -157,21 +157,9 @@ class script(object):
 
     FILE_CAPTION = """<b><a href="https://t.me/Navex_Movies">💎💎</a>{file_caption}</b>"""
 
-    MOVIE_UPDATE_NOTIFY_TXT = """
-</b><a href={poster_url}>📥</a><a href={imdb_url}>New {tag} Added</a></b>
-
-✨ ᴛɪᴛʟᴇ : <code>{filename}</code>
-─┉─•✦•─┉─
-<blockquote>
-🎭 ɢᴇɴʀᴇs : <b>{genres}</b>
-📺 ᴏᴛᴛ        : <b>{ott}</b>
-🎞️ ǫᴜᴀʟɪᴛʏ : <b>{quality}</b>
-🎧 ᴀᴜᴅɪᴏ    : <b>{language}</b>
-🔥 ʀᴀᴛɪɴɢ   : <b>{rating}</b>
-{episodes}</blockquote>
-─┉─•✦•─┉─
-🔍 <b>Sᴇᴀʀᴄʜ →</b> {search_link}
-"""
+    MOVIE_UPDATE_NOTIFY_TXT = """<a href="{poster_url}">&#8203;</a><blockquote>🎭 <code>{genres}</code>  📺 <code>{ott}</code>
+🎞️ <code>{quality}</code>  🎧 <code>{language}</code>  🔥 <code>{rating}</code>
+{episodes}</blockquote>"""
 
     RESTART_TXT = """<b>
 📅 ᴅᴀᴛᴇ : <code>{}</code>
