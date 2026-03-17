@@ -6,7 +6,7 @@ from collections import defaultdict
 from plugins.helper.Imdbposter import get_movie_detailsx, fetch_image, get_movie_details
 from database.users_chats_db import db
 from pyrogram import Client, filters, enums
-from info import CHANNELS, MOVIE_UPDATE_CHANNEL, LINK_PREVIEW, ABOVE_PREVIEW, LANDSCAPE_POSTER, TMDB_POSTER, ADMINS
+from info import CHANNELS, MOVIE_UPDATE_CHANNEL, TMDB_POSTER, ADMINS
 from Script import script
 from database.ia_filterdb import save_file, get_search_results
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -266,7 +266,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
         movie_doc = {
             "_id": base_name,
             "files": [file_data],
-            "poster_url": details.get("backdrop_url") if LANDSCAPE_POSTER and TMDB_POSTER and not error_tmdb else details.get("poster_url"),
+            "poster_url": details.get("backdrop_url") or details.get("poster_url"),
             "genres": genres,
             "rating": details.get("rating", "N/A"),
             "imdb_url": details.get("url", "")if not TMDB_POSTER else details.get("tmdb_url"),
@@ -303,7 +303,6 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
 
 async def send_movie_update(bot, base_name):
     max_retries = 3
-    base_delay = 5
     for attempt in range(max_retries):
         try:
             movie_doc = await db.movie_updates.find_one({"_id": base_name})
@@ -313,13 +312,15 @@ async def send_movie_update(bot, base_name):
             text = generate_movie_message(movie_doc, base_name)
             buttons = InlineKeyboardMarkup([[
                 InlineKeyboardButton(
-                    'ɢᴇᴛ ғɪʟᴇs',
+                    '🎬 ɢᴇᴛ ғɪʟᴇs 🎬',
                     url=f"https://t.me/{temp.U_NAME}?start=getfile-{base_name.replace(' ', '-')}"
                 )
             ]])
 
-            if movie_doc.get("poster_url") and not LINK_PREVIEW:
-                resized_poster = await fetch_image(movie_doc["poster_url"], size=(2560, 1440) if LANDSCAPE_POSTER and TMDB_POSTER and not error_tmdb else (853, 1280))
+            poster_url = movie_doc.get("poster_url")
+            resized_poster = await fetch_image(poster_url, size=(2560, 1440)) if poster_url else None
+
+            if resized_poster:
                 msg = await bot.send_photo(
                     chat_id=MOVIE_UPDATE_CHANNEL,
                     photo=resized_poster,
@@ -329,15 +330,12 @@ async def send_movie_update(bot, base_name):
                 )
                 is_photo = True
             else:
-                send_params = {
-                    "chat_id": MOVIE_UPDATE_CHANNEL,
-                    "text": text,
-                    "reply_markup": buttons,
-                    "parse_mode": enums.ParseMode.HTML
-                }
-                if movie_doc.get("poster_url") and LINK_PREVIEW:
-                    send_params["invert_media"] = ABOVE_PREVIEW
-                msg = await bot.send_message(**send_params)
+                msg = await bot.send_message(
+                    chat_id=MOVIE_UPDATE_CHANNEL,
+                    text=text,
+                    reply_markup=buttons,
+                    parse_mode=enums.ParseMode.HTML
+                )
                 is_photo = False
 
             await db.movie_updates.update_one(
@@ -346,8 +344,7 @@ async def send_movie_update(bot, base_name):
             )
             return msg
         except FloodWait as e:
-            wait_time = e.value + 2
-            await asyncio.sleep(wait_time)
+            await asyncio.sleep(e.value + 2)
         except Exception as e:
             logger.error(f"Failed to send movie update: {e}")
             break
@@ -362,7 +359,7 @@ async def update_movie_message(bot, base_name):
         text = generate_movie_message(movie_doc, base_name)
         buttons = InlineKeyboardMarkup([[
             InlineKeyboardButton(
-                'ɢᴇᴛ ғɪʟᴇs',
+                '🎬 ɢᴇᴛ ғɪʟᴇs 🎬',
                 url=f"https://t.me/{temp.U_NAME}?start=getfile-{base_name.replace(' ', '-')}"
             )
         ]])
@@ -389,9 +386,7 @@ async def update_movie_message(bot, base_name):
                     message_id=message_id,
                     text=text,
                     reply_markup=buttons,
-                    parse_mode=enums.ParseMode.HTML,
-                    invert_media=ABOVE_PREVIEW,
-                    disable_web_page_preview=not LINK_PREVIEW
+                    parse_mode=enums.ParseMode.HTML
                 )
             return
         except (MessageIdInvalid, MessageNotModified):
@@ -501,7 +496,7 @@ async def manual_movie_update(bot, message):
         movie_doc = {
             "_id": base_name,
             "files": file_entries,
-            "poster_url": details.get("backdrop_url") if LANDSCAPE_POSTER and TMDB_POSTER and not error_tmdb else details.get("poster_url"),
+            "poster_url": details.get("backdrop_url") or details.get("poster_url"),
             "genres": genres,
             "rating": details.get("rating", "N/A"),
             "imdb_url": details.get("url", "") if not TMDB_POSTER else details.get("tmdb_url", ""),
@@ -618,14 +613,10 @@ def generate_movie_message(movie_doc, base_name):
 
     return script.MOVIE_UPDATE_NOTIFY_TXT.format(
         poster_url=movie_doc.get("poster_url", ""),
-        imdb_url=movie_doc.get("imdb_url", ""),
-        filename=base_name,
-        tag=primary_tag,
         genres=genres,
         ott=ott_str,
         quality=quality_str,
         language=language_str,
         episodes=epi_block,
-        rating=movie_doc.get("rating", "N/A"),
-        search_link=temp.B_LINK
+        rating=movie_doc.get("rating", "N/A")
     )
