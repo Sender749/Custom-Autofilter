@@ -732,6 +732,9 @@ async def miniapp_search(request):
 
     q     = request.rel_url.query.get('q', '').strip()
     fuzzy = request.rel_url.query.get('fuzzy', '0') in ('1', 'true', 'yes')
+    page  = max(0, int(request.rel_url.query.get('page', 0)))
+    limit = min(int(request.rel_url.query.get('limit', 24)), 40)
+
     if not q:
         return json_resp({'ok': False, 'error': "Missing 'q'"}, 400)
 
@@ -739,23 +742,53 @@ async def miniapp_search(request):
     search_q = _fuzzy_normalize(q) if fuzzy else q
 
     try:
-        files, _, total = await get_search_results(search_q, max_results=200)
+        files, _, total = await get_search_results(search_q, max_results=500)
     except Exception as exc:
         logger.error(f'get_search_results error: {exc}')
-        # Fall back to manual title-key search
-        files = await _search_by_title_key(_fuzzy_normalize(q), limit=200, fuzzy=fuzzy)
+        files = await _search_by_title_key(_fuzzy_normalize(q), limit=500, fuzzy=fuzzy)
         total = len(files)
 
     # If still no results with exact, try fuzzy word-by-word
     if not files and not fuzzy:
         try:
-            files, _, total = await get_search_results(_fuzzy_normalize(q), max_results=200)
+            files, _, total = await get_search_results(_fuzzy_normalize(q), max_results=500)
         except Exception:
             pass
 
     groups = _group_docs(files)
-    # Sort newest first for search results too
-    sorted_groups = sorted(groups.values(), key=lambda g: g['rep']['_id'], reverse=True)[:40]
+
+    # Relevance scoring: exact title match > starts-with > contains > rest
+    q_lower = q.lower().strip()
+    q_words = set(q_lower.split())
+
+    def _relevance(grp):
+        title = (grp['rep'].get('caption') or grp['rep'].get('file_name', '')).lower()
+        tk = title_key(title)
+        if tk == q_lower:
+            return 0  # exact match - highest priority
+        if tk.startswith(q_lower):
+            return 1  # starts with query
+        if q_lower in tk:
+            return 2  # query is substring
+        # word overlap score
+        tk_words = set(tk.split())
+        overlap = len(q_words & tk_words)
+        if overlap == len(q_words):
+            return 3  # all words match
+        if overlap > 0:
+            return 4 - (overlap / max(len(q_words), 1))  # partial word match
+        return 5  # weak match
+
+    sorted_groups = sorted(
+        groups.values(),
+        key=lambda g: (_relevance(g), -g['rep']['_id'])
+    )
+
+    total_groups = len(sorted_groups)
+    start = page * limit
+    end   = start + limit
+    page_groups = sorted_groups[start:end]
+    has_more = end < total_groups
 
     async def make_card(grp):
         try:
@@ -767,13 +800,13 @@ async def miniapp_search(request):
             meta  = _cache_get(_META_CACHE, ck, _META_CACHE_TTL)
             if meta is None:
                 meta = await _get_meta(title, year)
-            tmdb_t = (meta or {}).get('type')
-            tmdb_g = (meta or {}).get('genres', [])
+            tmdb_t  = (meta or {}).get('type')
+            tmdb_g  = (meta or {}).get('genres', [])
             tmdb_oc = (meta or {}).get('origin_country', [])
             tmdb_ol = (meta or {}).get('original_language', '')
-            ctype  = detect_content_type(fname, tmdb_type=tmdb_t, tmdb_genres=tmdb_g,
-                                         tmdb_origin_country=tmdb_oc,
-                                         tmdb_original_language=tmdb_ol)
+            ctype   = detect_content_type(fname, tmdb_type=tmdb_t, tmdb_genres=tmdb_g,
+                                          tmdb_origin_country=tmdb_oc,
+                                          tmdb_original_language=tmdb_ol)
             return {
                 'group_title': title,
                 'id':          str(rep['_id']),
@@ -789,9 +822,15 @@ async def miniapp_search(request):
             logger.error(f'make_card (search) error: {exc}')
             return None
 
-    cards = await asyncio.gather(*[make_card(g) for g in sorted_groups], return_exceptions=True)
+    cards = await asyncio.gather(*[make_card(g) for g in page_groups], return_exceptions=True)
     results = [c for c in cards if isinstance(c, dict)]
-    return json_resp({'ok': True, 'results': results, 'total': total})
+    return json_resp({
+        'ok':       True,
+        'results':  results,
+        'total':    total_groups,
+        'page':     page,
+        'has_more': has_more,
+    })
 
 
 async def miniapp_group_details(request):
