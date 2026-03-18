@@ -754,12 +754,10 @@ function requestFile(btn) {
   const fileId = btn.getAttribute('data-file-id');
   if (!fileId) return;
   tg.HapticFeedback.impactOccurred('medium');
-  tg.openTelegramLink('https://t.me/' + BOT_USERNAME);
-  fetch(API_BASE + '/miniapp/send_file', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ file_id: fileId, initData: tg.initData || '' }),
-  }).catch(()=>{});
+  // Always open bot via deep link with file_id — this triggers /start miniapp_FILEID
+  // in commands.py which calls send_file_with_checks every single time.
+  // Works on first and every subsequent request, no background fetch needed.
+  tg.openTelegramLink('https://t.me/' + BOT_USERNAME + '?start=miniapp_' + encodeURIComponent(fileId));
 }
 
 function switchSeason(sNum, tabEl) {
