@@ -157,8 +157,12 @@ class script(object):
 
     FILE_CAPTION = """<b><a href="https://t.me/Navex_Movies">💎💎</a>{file_caption}</b>"""
 
-    MOVIE_UPDATE_NOTIFY_TXT = """<a href="{poster_url}">&#8203;</a><blockquote>🎭 <code>{genres}</code>  📺 <code>{ott}</code>
-🎞️ <code>{quality}</code>  🎧 <code>{language}</code>  🔥 <code>{rating}</code>
+    MOVIE_UPDATE_NOTIFY_TXT = """<a href="{poster_url}">&#8203;</a>
+<blockquote>🎭 ɢᴇɴʀᴇs  : <code>{genres}</code>
+📺 ᴏᴛᴛ       : <code>{ott}</code>
+🎞️ ǫᴜᴀʟɪᴛʏ : <code>{quality}</code>
+🎧 ᴀᴜᴅɪᴏ    : <code>{language}</code>
+🔥 ʀᴀᴛɪɴɢ   : <code>{rating}</code>
 {episodes}</blockquote>"""
 
     RESTART_TXT = """<b>
@@ -166,7 +170,7 @@ class script(object):
 ⏰ ᴛɪᴍᴇ : <code>{}</code>
 🌐 ᴛɪᴍᴇᴢᴏɴᴇ : <code>Asia/Kolkata</code></b>"""
 
-    ALRT_TXT = """ᴊᴀʟᴅɪ ʏᴇʜᴀ sᴇ ʜᴀᴛᴏ !"""
+    ALRT_TXT = """Search Your Own !"""
 
     OLD_ALRT_TXT = """ʏᴏᴜ ᴀʀᴇ ᴜsɪɴɢ ᴍʏ ᴏʟᴅ ᴍᴇssᴀɢᴇs..sᴇɴᴅ ᴀ ɴᴇᴡ ʀᴇǫᴜᴇsᴛ.."""
 
