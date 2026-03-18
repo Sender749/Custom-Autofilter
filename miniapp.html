@@ -305,8 +305,11 @@ html,body{height:100%;width:100%;background:var(--bg)!important;color:var(--text
       <div id="searchResults">
         <div class="empty-state">
           <div class="empty-title">Search for anything</div>
-          <div class="empty-sub">Movies, Series, Anime, Shows...</div>
+          <div class="empty-sub">Type movie, series name...</div>
         </div>
+      </div>
+      <div class="load-more-sentinel" id="searchSentinel">
+        <div class="load-more-spinner" id="searchSpinner"></div>
       </div>
     </div>
 
@@ -444,49 +447,124 @@ function setupInfiniteScroll() {
     }, { rootMargin: '300px' });
     obs.observe(document.getElementById(tab + 'Sentinel'));
   });
+  // Search infinite scroll
+  const searchObs = new IntersectionObserver(entries => {
+    if (entries[0].isIntersecting && currentTab === 'search' && searchState.hasMore) {
+      runSearch(searchState.query, false);
+    }
+  }, { rootMargin: '300px' });
+  searchObs.observe(document.getElementById('searchSentinel'));
 }
 
 // ─── SEARCH — uses same backend get_search_results via /miniapp/search ─────────
+// ─── SEARCH ────────────────────────────────────────────────────────────────────
 function normalizeQ(s) {
   return s.toLowerCase()
-    .replace(/(.)\\1+/g,'$1')
-    .replace(/[^a-z0-9\\u0080-\\uffff]+/g,' ')
+    .replace(/(.)\1+/g,'$1')
+    .replace(/[^a-z0-9\u0080-\uffff]+/g,' ')
     .trim();
 }
 
-async function runSearch(query) {
-  const container = document.getElementById('searchResults');
-  container.innerHTML = skeletonGrid(8);
+// ─── SEARCH STATE ─────────────────────────────────────────────────────────────
+let searchState = { query: '', page: 0, loading: false, hasMore: false, total: 0, grid: null };
 
-  // Primary search
-  let data = await apiFetch('/miniapp/search?q=' + encodeURIComponent(query) + '&fuzzy=1');
-  // If nothing, try fuzzy-normalized form
-  if (!data || !data.results || !data.results.length) {
+async function runSearch(query, reset) {
+  if (reset) {
+    searchState.query   = query;
+    searchState.page    = 0;
+    searchState.hasMore = false;
+    searchState.total   = 0;
+    searchState.grid    = null;
+  }
+  if (searchState.loading) return;
+  if (!reset && !searchState.hasMore) return;
+
+  const container = document.getElementById('searchResults');
+  searchState.loading = true;
+
+  if (reset) {
+    container.innerHTML = skeletonGrid(8);
+  } else {
+    document.getElementById('searchSpinner').classList.add('visible');
+  }
+
+  const url = '/miniapp/search?q=' + encodeURIComponent(query)
+            + '&fuzzy=1&page=' + searchState.page + '&limit=24';
+  let data = await apiFetch(url);
+
+  // Fuzzy fallback if no results on first page
+  if (reset && (!data || !data.results || !data.results.length)) {
     const fuzzyQ = normalizeQ(query);
     if (fuzzyQ !== query.toLowerCase().trim()) {
-      data = await apiFetch('/miniapp/search?q=' + encodeURIComponent(fuzzyQ) + '&fuzzy=1');
+      data = await apiFetch('/miniapp/search?q=' + encodeURIComponent(fuzzyQ)
+                           + '&fuzzy=1&page=0&limit=24');
+      if (data && data.results && data.results.length) {
+        searchState.query = fuzzyQ;
+      }
     }
   }
 
+  searchState.loading = false;
+  document.getElementById('searchSpinner').classList.remove('visible');
+
   if (data && data.ok && data.results && data.results.length) {
-    container.innerHTML = '<div style="font-family:\'Bebas Neue\',sans-serif;font-size:20px;letter-spacing:1px;color:var(--text);margin-bottom:10px">Results for \'' + esc(query) + '\' <small style="font-size:12px;color:var(--muted);font-family:\'DM Sans\',sans-serif">' + (data.total||data.results.length) + ' found</small></div>';
-    const grid = document.createElement('div');
-    grid.className = 'grid';
-    container.appendChild(grid);
-    renderGrid(grid, data.results, 'grid');
+    searchState.hasMore = data.has_more === true;
+    searchState.total   = data.total || data.results.length;
+    searchState.page++;
+
+    if (reset) {
+      container.innerHTML = '<div style="font-family:\'Bebas Neue\',sans-serif;font-size:20px;letter-spacing:1px;color:var(--text);margin-bottom:10px" id="searchHeader">Results for \'' + esc(query) + '\' <small style="font-size:12px;color:var(--muted);font-family:\'DM Sans\',sans-serif" id="searchCount">' + searchState.total + ' found</small></div>';
+      const grid = document.createElement('div');
+      grid.className = 'grid';
+      grid.id = 'searchGrid';
+      container.appendChild(grid);
+      searchState.grid = grid;
+    }
+    renderGrid(searchState.grid, data.results, 'grid');
+    // append mode for pagination (don't clear grid)
+    if (!reset) {
+      data.results.forEach(item => searchState.grid.appendChild(buildCard(item)));
+    }
     enrichCardsWithPosters(data.results);
+  } else if (reset) {
+    // Nothing found at all
+    container.innerHTML =
+      '<div class="empty-state">' +
+        '<div style="font-size:48px;margin-bottom:8px">🔍</div>' +
+        '<div class="empty-title">Nothing found for "' + esc(query) + '"</div>' +
+        '<div class="empty-sub" style="margin-top:8px;line-height:1.7">' +
+          'Make sure the spelling is correct.<br>' +
+          'Just type the Movie, Series or Anime name.<br>' +
+          '<span style="color:var(--accent);font-weight:600">Example:</span> Pushpa 2, The Boys, Jujutsu Kaisen' +
+        '</div>' +
+      '</div>';
+  }
+}
+
+function renderGrid(container, items, mode) {
+  if (!container) return;
+  // For non-search grids (movies/series), replace content
+  if (container.id !== 'searchGrid') {
+    container.className = mode === 'list' ? 'grid list-mode' : 'grid';
+    container.innerHTML = '';
+    if (!items || !items.length) { container.innerHTML = emptyState('No files yet',''); return; }
+    items.forEach(item => container.appendChild(mode==='list' ? buildListCard(item) : buildCard(item)));
   } else {
-    container.innerHTML = emptyState('Nothing found', 'No results for "' + esc(query) + '"');
+    // Search grid: append items (called after grid already exists on page load, replace on reset)
+    container.className = 'grid';
+    if (!items || !items.length) return;
+    items.forEach(item => container.appendChild(buildCard(item)));
   }
 }
 
 async function doSearch(q) {
   if (!q) {
     document.getElementById('searchResults').innerHTML =
-      '<div class="empty-state"><div class="empty-title">Search for anything</div><div class="empty-sub">Movies, Series...</div></div>';
+      '<div class="empty-state"><div class="empty-title">Search for anything</div><div class="empty-sub">Type movie, series name...</div></div>';
+    searchState.hasMore = false;
     return;
   }
-  await runSearch(q);
+  await runSearch(q, true);
 }
 
 // ─── POSTER ENRICHMENT ────────────────────────────────────────────────────────
@@ -524,14 +602,6 @@ async function enrichCardsWithPosters(items) {
     } catch(e) {}
     await new Promise(r => setTimeout(r, 100));
   }
-}
-
-// ─── RENDER ───────────────────────────────────────────────────────────────────
-function renderGrid(container, items, mode) {
-  container.className = mode === 'list' ? 'grid list-mode' : 'grid';
-  container.innerHTML = '';
-  if (!items || !items.length) { container.innerHTML = emptyState('No files yet',''); return; }
-  items.forEach(item => container.appendChild(mode==='list' ? buildListCard(item) : buildCard(item)));
 }
 
 function buildCard(item) {
