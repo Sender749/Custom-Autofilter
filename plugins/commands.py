@@ -77,24 +77,15 @@ async def start(client: Client, message):
         return
 
     # ── miniapp deeplink: ?start=miniapp_FILEID ──────────────────────────────
-    # Opened when user taps a file button in the miniapp.
-    # Shows a loading sticker (same as file_ handler), runs all checks via
-    # send_file_with_checks, then deletes the sticker — mirrors group file flow.
+    # This is the single universal entry-point from the miniapp for ALL opening
+    # methods (menu button, /miniapp cmd, configure button, direct link).
+    # The miniapp closes and sends the user here; we call send_file_with_checks
+    # which is THE one function that handles force-sub, limit, verify, premium.
     if data and data.startswith('miniapp_'):
         file_id = data[len('miniapp_'):]
         if file_id:
-            loading = None
-            try:
-                loading = await message.reply_sticker(random.choice(LOADING_STICKERS))
-            except Exception:
-                loading = None
             from plugins.miniapp_plugin import send_file_with_checks
             await send_file_with_checks(client, message.from_user.id, file_id)
-            if loading:
-                try:
-                    await loading.delete()
-                except Exception:
-                    pass
         return
 
     if data and data.startswith('notcopy'):
