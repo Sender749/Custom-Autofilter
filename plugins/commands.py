@@ -72,7 +72,17 @@ async def start(client: Client, message):
     if len(message.command) == 2 and data.startswith('getfile'):
         movies = message.command[1].split("-", 1)[1] 
         movie = movies.replace('-',' ')
-        message.text = movie 
+        message.text = movie
+        # Inject the user's last known group context so auto_filter generates
+        # correct file_{grp_id}_{file_id} links instead of file_{user_pm_id}_{file_id}
+        user_id = message.from_user.id
+        last_grp = temp.CHAT.get(user_id)
+        if last_grp and str(last_grp).startswith('-'):
+            # User has a known group context — use it
+            message.chat.id = last_grp
+        elif LOG_CHANNEL:
+            # Fallback: use LOG_CHANNEL as the group context
+            message.chat.id = LOG_CHANNEL
         await auto_filter(client, message) 
         return
 
