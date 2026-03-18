@@ -72,30 +72,29 @@ async def start(client: Client, message):
     if len(message.command) == 2 and data.startswith('getfile'):
         movies = message.command[1].split("-", 1)[1] 
         movie = movies.replace('-',' ')
-        message.text = movie
-        # Inject the user's last known group context so auto_filter generates
-        # correct file_{grp_id}_{file_id} links instead of file_{user_pm_id}_{file_id}
-        user_id = message.from_user.id
-        last_grp = temp.CHAT.get(user_id)
-        if last_grp and str(last_grp).startswith('-'):
-            # User has a known group context — use it
-            message.chat.id = last_grp
-        elif LOG_CHANNEL:
-            # Fallback: use LOG_CHANNEL as the group context
-            message.chat.id = LOG_CHANNEL
+        message.text = movie 
         await auto_filter(client, message) 
         return
 
     # ── miniapp deeplink: ?start=miniapp_FILEID ──────────────────────────────
-    # This is the single universal entry-point from the miniapp for ALL opening
-    # methods (menu button, /miniapp cmd, configure button, direct link).
-    # The miniapp closes and sends the user here; we call send_file_with_checks
-    # which is THE one function that handles force-sub, limit, verify, premium.
+    # Opened when user taps a file button in the miniapp.
+    # Shows a loading sticker (same as file_ handler), runs all checks via
+    # send_file_with_checks, then deletes the sticker — mirrors group file flow.
     if data and data.startswith('miniapp_'):
         file_id = data[len('miniapp_'):]
         if file_id:
+            loading = None
+            try:
+                loading = await message.reply_sticker(random.choice(LOADING_STICKERS))
+            except Exception:
+                loading = None
             from plugins.miniapp_plugin import send_file_with_checks
             await send_file_with_checks(client, message.from_user.id, file_id)
+            if loading:
+                try:
+                    await loading.delete()
+                except Exception:
+                    pass
         return
 
     if data and data.startswith('notcopy'):
