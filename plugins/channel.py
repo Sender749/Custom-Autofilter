@@ -307,6 +307,28 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
         movie_doc["files"].append(file_data)
         schedule_update(bot, base_name)
 
+SEVEN_DAYS = 7 * 24 * 60 * 60  # 604800 seconds
+
+async def _auto_delete_after_7days(bot, base_name, message_id):
+    """Background task: deletes the movie update message after 7 days."""
+    try:
+        await asyncio.sleep(SEVEN_DAYS)
+        try:
+            await bot.delete_messages(
+                chat_id=MOVIE_UPDATE_CHANNEL,
+                message_ids=message_id
+            )
+        except Exception:
+            pass
+        try:
+            await db.movie_updates.delete_one({"_id": base_name})
+        except Exception:
+            pass
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error(f"Auto-delete failed for {base_name}: {e}")
+
 async def send_movie_update(bot, base_name):
     max_retries = 3
     for attempt in range(max_retries):
@@ -326,8 +348,6 @@ async def send_movie_update(bot, base_name):
             poster_url = movie_doc.get("poster_url")
             resized_poster = None
             if poster_url:
-                # poster_url is already backdrop (landscape) if available, portrait otherwise
-                # Detect by checking which was stored: backdrop is wider so we try landscape size
                 is_landscape = movie_doc.get("is_landscape", False)
                 size = (1280, 720) if is_landscape else (800, 1200)
                 resized_poster = await fetch_image(poster_url, size=size)
@@ -354,6 +374,8 @@ async def send_movie_update(bot, base_name):
                 {"_id": base_name},
                 {"$set": {"message_id": msg.id, "is_photo": is_photo}}
             )
+            # Schedule 7-day auto-delete as a non-blocking background task
+            asyncio.create_task(_auto_delete_after_7days(bot, base_name, msg.id))
             return msg
         except FloodWait as e:
             await asyncio.sleep(e.value + 2)
