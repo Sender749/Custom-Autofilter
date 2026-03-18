@@ -754,10 +754,13 @@ function requestFile(btn) {
   const fileId = btn.getAttribute('data-file-id');
   if (!fileId) return;
   tg.HapticFeedback.impactOccurred('medium');
-  // Always open bot via deep link with file_id — this triggers /start miniapp_FILEID
-  // in commands.py which calls send_file_with_checks every single time.
-  // Works on first and every subsequent request, no background fetch needed.
-  tg.openTelegramLink('https://t.me/' + BOT_USERNAME + '?start=miniapp_' + encodeURIComponent(fileId));
+  // Close miniapp first so Telegram re-opens bot with the deep link param.
+  // Without tg.close(), Telegram may silently ignore openTelegramLink on repeat taps
+  // because the bot chat is already in the foreground. Closing forces a fresh open.
+  const url = 'https://t.me/' + BOT_USERNAME + '?start=miniapp_' + encodeURIComponent(fileId);
+  tg.close();
+  // Small delay lets the close animation complete before the link fires
+  setTimeout(() => tg.openTelegramLink(url), 150);
 }
 
 function switchSeason(sNum, tabEl) {
