@@ -263,10 +263,16 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
             genres = ", ".join(g for g in genre_list if g in STANDARD_GENRES) or "N/A"
         else:
             genres = ", ".join(g for g in raw_genres if g in STANDARD_GENRES) or "N/A"
+        # Use landscape (backdrop) if available, fall back to portrait poster
+        backdrop_url = details.get("backdrop_url")
+        portrait_url = details.get("poster_url")
+        has_landscape = bool(backdrop_url)
+        chosen_poster = backdrop_url if has_landscape else portrait_url
         movie_doc = {
             "_id": base_name,
             "files": [file_data],
-            "poster_url": details.get("backdrop_url") or details.get("poster_url"),
+            "poster_url": chosen_poster,
+            "is_landscape": has_landscape,
             "genres": genres,
             "rating": details.get("rating", "N/A"),
             "imdb_url": details.get("url", "")if not TMDB_POSTER else details.get("tmdb_url"),
@@ -312,13 +318,19 @@ async def send_movie_update(bot, base_name):
             text = generate_movie_message(movie_doc, base_name)
             buttons = InlineKeyboardMarkup([[
                 InlineKeyboardButton(
-                    '🎬 ɢᴇᴛ ғɪʟᴇs 🎬',
+                    '❗ CLICK HERE TO GET FILE ❗',
                     url=f"https://t.me/{temp.U_NAME}?start=getfile-{base_name.replace(' ', '-')}"
                 )
             ]])
 
             poster_url = movie_doc.get("poster_url")
-            resized_poster = await fetch_image(poster_url, size=(2560, 1440)) if poster_url else None
+            resized_poster = None
+            if poster_url:
+                # poster_url is already backdrop (landscape) if available, portrait otherwise
+                # Detect by checking which was stored: backdrop is wider so we try landscape size
+                is_landscape = movie_doc.get("is_landscape", False)
+                size = (1280, 720) if is_landscape else (800, 1200)
+                resized_poster = await fetch_image(poster_url, size=size)
 
             if resized_poster:
                 msg = await bot.send_photo(
@@ -359,7 +371,7 @@ async def update_movie_message(bot, base_name):
         text = generate_movie_message(movie_doc, base_name)
         buttons = InlineKeyboardMarkup([[
             InlineKeyboardButton(
-                '🎬 ɢᴇᴛ ғɪʟᴇs 🎬',
+                '❗ CLICK HERE TO GET FILE ❗',
                 url=f"https://t.me/{temp.U_NAME}?start=getfile-{base_name.replace(' ', '-')}"
             )
         ]])
@@ -493,10 +505,15 @@ async def manual_movie_update(bot, message):
         else:
             genres = ", ".join(g for g in raw_genres if g in STANDARD_GENRES) or "N/A"
 
+        backdrop_url = details.get("backdrop_url")
+        portrait_url = details.get("poster_url")
+        has_landscape = bool(backdrop_url)
+        chosen_poster = backdrop_url if has_landscape else portrait_url
         movie_doc = {
             "_id": base_name,
             "files": file_entries,
-            "poster_url": details.get("backdrop_url") or details.get("poster_url"),
+            "poster_url": chosen_poster,
+            "is_landscape": has_landscape,
             "genres": genres,
             "rating": details.get("rating", "N/A"),
             "imdb_url": details.get("url", "") if not TMDB_POSTER else details.get("tmdb_url", ""),
