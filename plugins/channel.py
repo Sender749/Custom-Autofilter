@@ -263,16 +263,10 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
             genres = ", ".join(g for g in genre_list if g in STANDARD_GENRES) or "N/A"
         else:
             genres = ", ".join(g for g in raw_genres if g in STANDARD_GENRES) or "N/A"
-        # Use landscape (backdrop) if available, fall back to portrait poster
-        backdrop_url = details.get("backdrop_url")
-        portrait_url = details.get("poster_url")
-        has_landscape = bool(backdrop_url)
-        chosen_poster = backdrop_url if has_landscape else portrait_url
         movie_doc = {
             "_id": base_name,
             "files": [file_data],
-            "poster_url": chosen_poster,
-            "is_landscape": has_landscape,
+            "poster_url": details.get("backdrop_url") or details.get("poster_url"),
             "genres": genres,
             "rating": details.get("rating", "N/A"),
             "imdb_url": details.get("url", "")if not TMDB_POSTER else details.get("tmdb_url"),
@@ -307,28 +301,6 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
         movie_doc["files"].append(file_data)
         schedule_update(bot, base_name)
 
-SEVEN_DAYS = 7 * 24 * 60 * 60  # 604800 seconds
-
-async def _auto_delete_after_7days(bot, base_name, message_id):
-    """Background task: deletes the movie update message after 7 days."""
-    try:
-        await asyncio.sleep(SEVEN_DAYS)
-        try:
-            await bot.delete_messages(
-                chat_id=MOVIE_UPDATE_CHANNEL,
-                message_ids=message_id
-            )
-        except Exception:
-            pass
-        try:
-            await db.movie_updates.delete_one({"_id": base_name})
-        except Exception:
-            pass
-    except asyncio.CancelledError:
-        pass
-    except Exception as e:
-        logger.error(f"Auto-delete failed for {base_name}: {e}")
-
 async def send_movie_update(bot, base_name):
     max_retries = 3
     for attempt in range(max_retries):
@@ -340,17 +312,13 @@ async def send_movie_update(bot, base_name):
             text = generate_movie_message(movie_doc, base_name)
             buttons = InlineKeyboardMarkup([[
                 InlineKeyboardButton(
-                    '❗ CLICK HERE TO GET FILE ❗',
+                    '🎬 ɢᴇᴛ ғɪʟᴇs 🎬',
                     url=f"https://t.me/{temp.U_NAME}?start=getfile-{base_name.replace(' ', '-')}"
                 )
             ]])
 
             poster_url = movie_doc.get("poster_url")
-            resized_poster = None
-            if poster_url:
-                is_landscape = movie_doc.get("is_landscape", False)
-                size = (1280, 720) if is_landscape else (800, 1200)
-                resized_poster = await fetch_image(poster_url, size=size)
+            resized_poster = await fetch_image(poster_url, size=(2560, 1440)) if poster_url else None
 
             if resized_poster:
                 msg = await bot.send_photo(
@@ -374,8 +342,6 @@ async def send_movie_update(bot, base_name):
                 {"_id": base_name},
                 {"$set": {"message_id": msg.id, "is_photo": is_photo}}
             )
-            # Schedule 7-day auto-delete as a non-blocking background task
-            asyncio.create_task(_auto_delete_after_7days(bot, base_name, msg.id))
             return msg
         except FloodWait as e:
             await asyncio.sleep(e.value + 2)
@@ -393,7 +359,7 @@ async def update_movie_message(bot, base_name):
         text = generate_movie_message(movie_doc, base_name)
         buttons = InlineKeyboardMarkup([[
             InlineKeyboardButton(
-                '❗ CLICK HERE TO GET FILE ❗',
+                '🎬 ɢᴇᴛ ғɪʟᴇs 🎬',
                 url=f"https://t.me/{temp.U_NAME}?start=getfile-{base_name.replace(' ', '-')}"
             )
         ]])
@@ -527,15 +493,10 @@ async def manual_movie_update(bot, message):
         else:
             genres = ", ".join(g for g in raw_genres if g in STANDARD_GENRES) or "N/A"
 
-        backdrop_url = details.get("backdrop_url")
-        portrait_url = details.get("poster_url")
-        has_landscape = bool(backdrop_url)
-        chosen_poster = backdrop_url if has_landscape else portrait_url
         movie_doc = {
             "_id": base_name,
             "files": file_entries,
-            "poster_url": chosen_poster,
-            "is_landscape": has_landscape,
+            "poster_url": details.get("backdrop_url") or details.get("poster_url"),
             "genres": genres,
             "rating": details.get("rating", "N/A"),
             "imdb_url": details.get("url", "") if not TMDB_POSTER else details.get("tmdb_url", ""),
