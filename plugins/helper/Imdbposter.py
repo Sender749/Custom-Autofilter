@@ -136,11 +136,11 @@ async def get_movie_detailsx(query, id=False, file=None):
                 if resp.status != 200:
                     text = await resp.text()
                     logger.error(f"API request failed [{resp.status}] for query={q}\n {text}")
-                    return await resp.json()
+                    return {"error": True, "status": resp.status, "message": text}
                 data = await resp.json()
     except Exception as e:
         logger.error(f"An error occurred in get_movie_detailsx: {e}")
-        return None
+        return {"error": True, "message": str(e)}
     # Normalize fields
     details = {}
     details['title'] = data.get('title') or data.get('localized_title')
