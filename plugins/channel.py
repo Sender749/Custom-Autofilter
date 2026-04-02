@@ -250,7 +250,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
     if not movie_doc:
         if TMDB_POSTER:
             details = await get_movie_detailsx(base_name)
-            if details.get("error"):
+            if not details or details.get("error"):
                 error_tmdb=True
                 logger.info("TMDB error switching to IMDB")
                 details = await get_movie_details(base_name) or {}
@@ -310,10 +310,12 @@ async def send_movie_update(bot, base_name):
                 return None
 
             text = generate_movie_message(movie_doc, base_name)
+            # Telegram start params only allow a-z, A-Z, 0-9, _ and -
+            safe_name = re.sub(r"[^a-zA-Z0-9 ]", "", base_name).strip().replace(' ', '-')
             buttons = InlineKeyboardMarkup([[
                 InlineKeyboardButton(
                     '🎬 ɢᴇᴛ ғɪʟᴇs 🎬',
-                    url=f"https://t.me/{temp.U_NAME}?start=getfile-{base_name.replace(' ', '-')}"
+                    url=f"https://t.me/{temp.U_NAME}?start=getfile-{safe_name}"
                 )
             ]])
 
@@ -357,10 +359,11 @@ async def update_movie_message(bot, base_name):
             return
 
         text = generate_movie_message(movie_doc, base_name)
+        safe_name = re.sub(r"[^a-zA-Z0-9 ]", "", base_name).strip().replace(' ', '-')
         buttons = InlineKeyboardMarkup([[
             InlineKeyboardButton(
                 '🎬 ɢᴇᴛ ғɪʟᴇs 🎬',
-                url=f"https://t.me/{temp.U_NAME}?start=getfile-{base_name.replace(' ', '-')}"
+                url=f"https://t.me/{temp.U_NAME}?start=getfile-{safe_name}"
             )
         ]])
 
@@ -480,7 +483,7 @@ async def manual_movie_update(bot, message):
         error_tmdb = False
         if TMDB_POSTER:
             details = await get_movie_detailsx(base_name)
-            if details.get("error"):
+            if not details or details.get("error"):
                 error_tmdb = True
                 details = await get_movie_details(base_name) or {}
         else:
