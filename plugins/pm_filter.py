@@ -1635,7 +1635,7 @@ async def auto_filter(client, msg, spoll=False):
 
         btn.insert(0, [InlineKeyboardButton("• sᴇɴᴅ ᴀʟʟ •", callback_data=batch_link)])
         if not offset:
-            btn.insert(1, [InlineKeyboardButton("ɴᴏ ᴍᴏʀᴇ ᴘᴀɢᴇs", user_id=ADMINS[0])])
+            btn.insert(1, [InlineKeyboardButton("🚸 ɴᴏ ᴍᴏʀᴇ ᴘᴀɢᴇs 🚸", callback_data="pages")])
 
     if spoll:
         m = await msg.message.edit(f"<b><code>{search}</code> ɪs ꜰᴏᴜɴᴅ ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ ꜰᴏʀ ꜰɪʟᴇs 📫</b>")
