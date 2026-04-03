@@ -6,7 +6,7 @@ from collections import defaultdict
 from plugins.helper.Imdbposter import get_movie_detailsx, fetch_image, get_movie_details
 from database.users_chats_db import db
 from pyrogram import Client, filters, enums
-from info import CHANNELS, MOVIE_UPDATE_CHANNEL, TMDB_POSTER, ADMINS
+from info import CHANNELS, MOVIE_UPDATE_CHANNEL, LINK_PREVIEW, ABOVE_PREVIEW, LANDSCAPE_POSTER, TMDB_POSTER, ADMINS
 from Script import script
 from database.ia_filterdb import save_file, get_search_results
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -84,10 +84,12 @@ SINGLE_REGEX = re.compile(r'\bS(\d{1,2})[^\w\n\r]*E(?:p(?:isode)?)?0*(\d{1,3})',
 NAMED_REGEX = re.compile(r'Season\s*0*(\d{1,2})[\s\-,:]*Ep(?:isode)?\s*0*(\d{1,3})', re.IGNORECASE)
 EP_ONLY_RANGE = re.compile(r'\b(?:EP|Episode)0*(\d{1,3})\s*-\s*0*(\d{1,3})\b',re.IGNORECASE)
 
+error_tmdb = False
 
 media_filter = filters.document | filters.video | filters.audio
 locks = defaultdict(asyncio.Lock)
 pending_updates = {}
+
 
 @Client.on_message(filters.chat(CHANNELS) & media_filter)
 async def media_handler(bot, message):
@@ -101,14 +103,9 @@ async def media_handler(bot, message):
 
     media.file_type = next(ft for ft in ("document", "video", "audio") if hasattr(message, ft))
     media.caption = message.caption or ""
-    success = await save_file(media)
-    if not success:
-        return
-    try:
-        if await db.movie_update_status(bot.me.id):
-            await process_and_send_update(bot, media.file_name, media.caption)
-    except Exception:
-        logger.exception("Error processing media")
+    # Auto movie update is DISABLED — use /m command to manually send update
+    await save_file(media)
+
 
 def clean_mentions_links(text: str) -> str:
     return CLEAN_PATTERN.sub("", text or "").strip()
@@ -147,7 +144,6 @@ def schedule_update(bot, base_name, delay=5):
     if handle := pending_updates.get(base_name):
         if not handle.cancelled():
             handle.cancel()
-    
     loop = asyncio.get_event_loop()
     pending_updates[base_name] = loop.call_later(
         delay,
@@ -216,26 +212,13 @@ def extract_media_info(filename: str, caption: str):
         "language": language
     }
 
-async def process_and_send_update(bot, filename, caption):
-    try:
-        media_info = extract_media_info(filename, caption)
-        base_name = media_info["base_name"]
-        processed = media_info["processed"]
-
-        lock = locks[base_name]
-        async with lock:
-            await _process_with_lock(bot, filename, caption, media_info, base_name, processed)
-    except PyMongoError as e:
-        logger.error("Database error: %s", e)
-    except Exception as e:
-        logger.exception("Processing failed: %s", e)
 
 async def _process_with_lock(bot, filename, caption, media_info, base_name, processed):
     if not hasattr(db, 'movie_updates'):
         db.movie_updates = db.db.movie_updates
     movie_doc = await db.movie_updates.find_one({"_id": base_name})
     global error_tmdb
-    error_tmdb=False
+    error_tmdb = False
     file_data = {
         "filename": filename,
         "processed": processed,
@@ -251,7 +234,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
         if TMDB_POSTER:
             details = await get_movie_detailsx(base_name)
             if not details or details.get("error"):
-                error_tmdb=True
+                error_tmdb = True
                 logger.info("TMDB error switching to IMDB")
                 details = await get_movie_details(base_name) or {}
         else:
@@ -263,13 +246,17 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
             genres = ", ".join(g for g in genre_list if g in STANDARD_GENRES) or "N/A"
         else:
             genres = ", ".join(g for g in raw_genres if g in STANDARD_GENRES) or "N/A"
+
         movie_doc = {
             "_id": base_name,
             "files": [file_data],
-            "poster_url": details.get("backdrop_url") or details.get("poster_url"),
+            "poster_url": (
+                details.get("backdrop_url") if LANDSCAPE_POSTER and TMDB_POSTER and not error_tmdb
+                else details.get("poster_url")
+            ),
             "genres": genres,
             "rating": details.get("rating", "N/A"),
-            "imdb_url": details.get("url", "")if not TMDB_POSTER else details.get("tmdb_url"),
+            "imdb_url": details.get("url", "") if not TMDB_POSTER else details.get("tmdb_url", ""),
             "year": media_info["year"] or details.get("year"),
             "tag": media_info["tag"],
             "ott_platform": media_info["ott_platform"],
@@ -301,7 +288,9 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
         movie_doc["files"].append(file_data)
         schedule_update(bot, base_name)
 
+
 async def send_movie_update(bot, base_name):
+    global error_tmdb
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -310,7 +299,6 @@ async def send_movie_update(bot, base_name):
                 return None
 
             text = generate_movie_message(movie_doc, base_name)
-            # Telegram start params only allow a-z, A-Z, 0-9, _ and -
             safe_name = re.sub(r"[^a-zA-Z0-9 ]", "", base_name).strip().replace(' ', '-')
             buttons = InlineKeyboardMarkup([[
                 InlineKeyboardButton(
@@ -320,33 +308,37 @@ async def send_movie_update(bot, base_name):
             ]])
 
             poster_url = movie_doc.get("poster_url")
-            # Use a safe resize size — 2560x1440 exceeds Telegram's 10MB limit
-            resized_poster = await fetch_image(poster_url, size=(1280, 720)) if poster_url else None
-
             msg = None
             is_photo = False
-            if resized_poster:
-                try:
-                    msg = await bot.send_photo(
-                        chat_id=MOVIE_UPDATE_CHANNEL,
-                        photo=resized_poster,
-                        caption=text,
-                        reply_markup=buttons,
-                        parse_mode=enums.ParseMode.HTML
-                    )
-                    is_photo = True
-                except Exception as photo_err:
-                    logger.warning(f"send_photo failed, using text fallback: {photo_err}")
+
+            if poster_url and not LINK_PREVIEW:
+                # Respect LANDSCAPE_POSTER and TMDB_POSTER config flags for sizing
+                poster_size = (2560, 1440) if LANDSCAPE_POSTER and TMDB_POSTER and not error_tmdb else (853, 1280)
+                resized_poster = await fetch_image(poster_url, size=poster_size)
+                if resized_poster:
+                    try:
+                        msg = await bot.send_photo(
+                            chat_id=MOVIE_UPDATE_CHANNEL,
+                            photo=resized_poster,
+                            caption=text,
+                            reply_markup=buttons,
+                            parse_mode=enums.ParseMode.HTML
+                        )
+                        is_photo = True
+                    except Exception as photo_err:
+                        logger.warning(f"send_photo failed, falling back to text: {photo_err}")
 
             if not msg:
-                # Fallback: text message with link preview enabled so poster shows via URL
-                msg = await bot.send_message(
-                    chat_id=MOVIE_UPDATE_CHANNEL,
-                    text=text,
-                    reply_markup=buttons,
-                    parse_mode=enums.ParseMode.HTML,
-                    disable_web_page_preview=False
-                )
+                send_params = {
+                    "chat_id": MOVIE_UPDATE_CHANNEL,
+                    "text": text,
+                    "reply_markup": buttons,
+                    "parse_mode": enums.ParseMode.HTML,
+                    "disable_web_page_preview": not LINK_PREVIEW
+                }
+                if poster_url and LINK_PREVIEW:
+                    send_params["invert_media"] = ABOVE_PREVIEW
+                msg = await bot.send_message(**send_params)
                 is_photo = False
 
             await db.movie_updates.update_one(
@@ -354,6 +346,7 @@ async def send_movie_update(bot, base_name):
                 {"$set": {"message_id": msg.id, "is_photo": is_photo}}
             )
             return msg
+
         except FloodWait as e:
             await asyncio.sleep(e.value + 2)
         except Exception as e:
@@ -361,7 +354,9 @@ async def send_movie_update(bot, base_name):
             break
     return None
 
+
 async def update_movie_message(bot, base_name):
+    global error_tmdb
     try:
         movie_doc = await db.movie_updates.find_one({"_id": base_name})
         if not movie_doc:
@@ -393,14 +388,17 @@ async def update_movie_message(bot, base_name):
                     parse_mode=enums.ParseMode.HTML
                 )
             else:
-                await bot.edit_message_text(
-                    chat_id=MOVIE_UPDATE_CHANNEL,
-                    message_id=message_id,
-                    text=text,
-                    reply_markup=buttons,
-                    parse_mode=enums.ParseMode.HTML,
-                    disable_web_page_preview=False
-                )
+                edit_params = {
+                    "chat_id": MOVIE_UPDATE_CHANNEL,
+                    "message_id": message_id,
+                    "text": text,
+                    "reply_markup": buttons,
+                    "parse_mode": enums.ParseMode.HTML,
+                    "disable_web_page_preview": not LINK_PREVIEW
+                }
+                if LINK_PREVIEW:
+                    edit_params["invert_media"] = ABOVE_PREVIEW
+                await bot.edit_message_text(**edit_params)
             return
         except (MessageIdInvalid, MessageNotModified):
             pass
@@ -420,23 +418,27 @@ async def update_movie_message(bot, base_name):
     except Exception as e:
         logger.error(f"Failed to update movie message: {e}")
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# /m command — Admin manually triggers a movie update post
+# Usage:  /m Movie Name
+#         /m Movie Name 2024
+# ─────────────────────────────────────────────────────────────────────────────
 @Client.on_message(filters.command("m") & filters.private & filters.user(ADMINS))
 async def manual_movie_update(bot, message):
-    """
-    /m {movie name} {release year}
-    Admin command to manually send a movie update message by searching the database.
-    """
     args = message.text.strip().split(None, 1)
     if len(args) < 2:
         return await message.reply(
             "<b>Usage:</b> <code>/m {movie name} {year}</code>\n\n"
-            "<b>Example:</b> <code>/m Pushpa 2025</code>",
+            "<b>Examples:</b>\n"
+            "• <code>/m Pushpa 2025</code>\n"
+            "• <code>/m Leo</code>",
             parse_mode=enums.ParseMode.HTML
         )
 
     full_query = args[1].strip()
 
-    # Try to extract trailing year (4-digit number at end of query)
+    # Extract optional trailing year
     year_match = re.search(r'\b((?:19|20)\d{2})\s*$', full_query)
     if year_match:
         movie_name = full_query[:year_match.start()].strip()
@@ -448,29 +450,36 @@ async def manual_movie_update(bot, message):
     if not movie_name:
         return await message.reply("❌ Please provide a movie name.")
 
-    status_msg = await message.reply(f"🔍 Searching database for <b>{movie_name}</b>{f' ({year})' if year else ''}...", parse_mode=enums.ParseMode.HTML)
+    status_msg = await message.reply(
+        f"🔍 Searching database for <b>{movie_name}</b>{f' ({year})' if year else ''}...",
+        parse_mode=enums.ParseMode.HTML
+    )
 
     try:
-        # Search DB using existing search function
+        # Search DB — try with year first, then without if no results
         search_query = f"{movie_name} {year}" if year else movie_name
         files, _, total = await get_search_results(search_query, max_results=100, offset=0)
 
-        if not files:
-            # Try with just movie name if year search returned nothing
-            if year:
-                files, _, total = await get_search_results(movie_name, max_results=100, offset=0)
+        if not files and year:
+            files, _, total = await get_search_results(movie_name, max_results=100, offset=0)
 
         if not files:
-            return await status_msg.edit(f"❌ No files found for <b>{movie_name}</b>{f' ({year})' if year else ''} in database.", parse_mode=enums.ParseMode.HTML)
+            return await status_msg.edit(
+                f"❌ No files found for <b>{movie_name}</b>{f' ({year})' if year else ''} in database.",
+                parse_mode=enums.ParseMode.HTML
+            )
 
-        await status_msg.edit(f"✅ Found <b>{total}</b> file(s). Building update message...", parse_mode=enums.ParseMode.HTML)
+        await status_msg.edit(
+            f"✅ Found <b>{total}</b> file(s). Building update message...",
+            parse_mode=enums.ParseMode.HTML
+        )
 
-        # Build a synthetic base_name for lookup/creation
+        # Build base_name from admin input (clean and titled)
         base_name = movie_name.title()
         if year:
             base_name = f"{base_name} {year}"
 
-        # Build file_data list from found files (same structure as auto handler)
+        # Build file_data entries from all found files
         file_entries = []
         for f in files:
             fname = f.get("file_name", "")
@@ -488,7 +497,7 @@ async def manual_movie_update(bot, message):
                 "episode": info["episode"]
             })
 
-        # Fetch movie details for poster / rating / genres
+        # Fetch poster / rating / genres from TMDB or IMDB
         global error_tmdb
         error_tmdb = False
         if TMDB_POSTER:
@@ -506,27 +515,13 @@ async def manual_movie_update(bot, message):
         else:
             genres = ", ".join(g for g in raw_genres if g in STANDARD_GENRES) or "N/A"
 
-        movie_doc = {
-            "_id": base_name,
-            "files": file_entries,
-            "poster_url": details.get("backdrop_url") or details.get("poster_url"),
-            "genres": genres,
-            "rating": details.get("rating", "N/A"),
-            "imdb_url": details.get("url", "") if not TMDB_POSTER else details.get("tmdb_url", ""),
-            "year": year or details.get("year"),
-            "tag": "#SERIES" if any(fe["tag"] == "#SERIES" for fe in file_entries) else "#MOVIE",
-            "ott_platform": file_entries[0]["ott_platform"] if file_entries else "N/A",
-            "message_id": None,
-            "is_photo": False
-        }
-
-        # Check if a movie_updates doc already exists and update it, else insert fresh
+        # Ensure movie_updates collection is accessible
         if not hasattr(db, 'movie_updates'):
             db.movie_updates = db.db.movie_updates
 
         existing = await db.movie_updates.find_one({"_id": base_name})
         if existing:
-            # Update files list with any new entries
+            # Merge new file entries, skip duplicates by filename
             existing_fnames = {fe["filename"] for fe in existing["files"]}
             new_entries = [fe for fe in file_entries if fe["filename"] not in existing_fnames]
             if new_entries:
@@ -534,21 +529,36 @@ async def manual_movie_update(bot, message):
                     {"_id": base_name},
                     {"$push": {"files": {"$each": new_entries}}}
                 )
-            movie_doc = await db.movie_updates.find_one({"_id": base_name})
         else:
+            movie_doc = {
+                "_id": base_name,
+                "files": file_entries,
+                "poster_url": (
+                    details.get("backdrop_url") if LANDSCAPE_POSTER and TMDB_POSTER and not error_tmdb
+                    else details.get("poster_url")
+                ),
+                "genres": genres,
+                "rating": details.get("rating", "N/A"),
+                "imdb_url": details.get("url", "") if not TMDB_POSTER else details.get("tmdb_url", ""),
+                "year": year or details.get("year"),
+                "tag": "#SERIES" if any(fe["tag"] == "#SERIES" for fe in file_entries) else "#MOVIE",
+                "ott_platform": file_entries[0]["ott_platform"] if file_entries else "N/A",
+                "message_id": None,
+                "is_photo": False
+            }
             try:
                 await db.movie_updates.insert_one(movie_doc)
             except DuplicateKeyError:
-                movie_doc = await db.movie_updates.find_one({"_id": base_name})
+                pass  # Race condition — already inserted, that's fine
 
-        await status_msg.edit(f"📤 Sending update to channel...", parse_mode=enums.ParseMode.HTML)
+        await status_msg.edit("📤 Sending update to channel...", parse_mode=enums.ParseMode.HTML)
         msg = await send_movie_update(bot, base_name)
 
         if msg:
             await status_msg.edit(
                 f"✅ Movie update sent successfully!\n"
                 f"🎬 <b>{base_name}</b>\n"
-                f"📁 Files: <b>{len(file_entries)}</b>",
+                f"📁 Files found: <b>{len(file_entries)}</b>",
                 parse_mode=enums.ParseMode.HTML
             )
         else:
@@ -556,7 +566,10 @@ async def manual_movie_update(bot, message):
 
     except Exception as e:
         logger.exception("Error in /m command: %s", e)
-        await status_msg.edit(f"❌ Error: <code>{e}</code>", parse_mode=enums.ParseMode.HTML)
+        try:
+            await status_msg.edit(f"❌ Error: <code>{e}</code>", parse_mode=enums.ParseMode.HTML)
+        except Exception:
+            pass
 
 
 def generate_movie_message(movie_doc, base_name):
