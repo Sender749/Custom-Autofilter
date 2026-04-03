@@ -320,23 +320,32 @@ async def send_movie_update(bot, base_name):
             ]])
 
             poster_url = movie_doc.get("poster_url")
-            resized_poster = await fetch_image(poster_url, size=(2560, 1440)) if poster_url else None
+            # Use a safe resize size — 2560x1440 exceeds Telegram's 10MB limit
+            resized_poster = await fetch_image(poster_url, size=(1280, 720)) if poster_url else None
 
+            msg = None
+            is_photo = False
             if resized_poster:
-                msg = await bot.send_photo(
-                    chat_id=MOVIE_UPDATE_CHANNEL,
-                    photo=resized_poster,
-                    caption=text,
-                    reply_markup=buttons,
-                    parse_mode=enums.ParseMode.HTML
-                )
-                is_photo = True
-            else:
+                try:
+                    msg = await bot.send_photo(
+                        chat_id=MOVIE_UPDATE_CHANNEL,
+                        photo=resized_poster,
+                        caption=text,
+                        reply_markup=buttons,
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                    is_photo = True
+                except Exception as photo_err:
+                    logger.warning(f"send_photo failed, using text fallback: {photo_err}")
+
+            if not msg:
+                # Fallback: text message with link preview enabled so poster shows via URL
                 msg = await bot.send_message(
                     chat_id=MOVIE_UPDATE_CHANNEL,
                     text=text,
                     reply_markup=buttons,
-                    parse_mode=enums.ParseMode.HTML
+                    parse_mode=enums.ParseMode.HTML,
+                    disable_web_page_preview=False
                 )
                 is_photo = False
 
@@ -389,7 +398,8 @@ async def update_movie_message(bot, base_name):
                     message_id=message_id,
                     text=text,
                     reply_markup=buttons,
-                    parse_mode=enums.ParseMode.HTML
+                    parse_mode=enums.ParseMode.HTML,
+                    disable_web_page_preview=False
                 )
             return
         except (MessageIdInvalid, MessageNotModified):
