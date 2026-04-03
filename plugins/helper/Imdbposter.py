@@ -1,5 +1,6 @@
 import re
-import aiohttp, socket
+import aiohttp
+import socket
 import warnings
 import logging
 from io import BytesIO
@@ -7,14 +8,13 @@ from PIL import Image
 from info import IMAGE_FETCH, TMDB_API_KEY, LANDSCAPE_POSTER
 from imdb import Cinemagoer
 
-
 logger = logging.getLogger(__name__)
 ia = Cinemagoer()
 LONG_IMDB_DESCRIPTION = False
 
 TMDB_BASE = "https://api.themoviedb.org/3"
-TMDB_IMG  = "https://image.tmdb.org/t/p/w1280"
-TMDB_BACK = "https://image.tmdb.org/t/p/w1280"
+TMDB_IMG  = "https://image.tmdb.org/t/p/w780"   # portrait poster
+TMDB_BACK = "https://image.tmdb.org/t/p/w1280"  # landscape backdrop
 
 def list_to_str(lst):
     if lst:
@@ -24,32 +24,38 @@ def list_to_str(lst):
 Image.MAX_IMAGE_PIXELS = None
 warnings.simplefilter("ignore", Image.DecompressionBombWarning)
 
+
 async def fetch_image(url, size=(1280, 720)):
+    """Download and resize an image. Returns a BytesIO JPEG or None on failure."""
     if not IMAGE_FETCH:
         logger.info("Image fetching is disabled.")
         return None
+    if not url:
+        return None
     try:
         connector = aiohttp.TCPConnector(family=socket.AF_INET)
-        async with aiohttp.ClientSession(connector=connector) as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            async with session.get(url) as response:
                 if response.status != 200:
-                    logger.error(f"Failed to fetch image: {response.status}")
+                    logger.error(f"Failed to fetch image [{response.status}]: {url}")
                     return None
                 data = await response.read()
-                img = Image.open(BytesIO(data))
-                img = img.convert("RGB")
-                img = img.resize(size, Image.LANCZOS)
-                out = BytesIO()
-                img.save(out, format="JPEG", quality=85, optimize=True)
-                out.seek(0)
-                # Telegram photo limit is 10MB — reject if too large
-                if out.seek(0, 2) > 9 * 1024 * 1024:
-                    logger.warning("Resized image too large for Telegram, skipping photo send")
-                    return None
-                out.seek(0)
-                return out
+
+        img = Image.open(BytesIO(data)).convert("RGB")
+        img = img.resize(size, Image.LANCZOS)
+        out = BytesIO()
+        img.save(out, format="JPEG", quality=85, optimize=True)
+
+        # Reject if over Telegram's 10 MB photo limit
+        size_bytes = out.seek(0, 2)
+        if size_bytes > 9 * 1024 * 1024:
+            logger.warning(f"Resized image too large ({size_bytes} bytes), skipping.")
+            return None
+        out.seek(0)
+        return out
     except aiohttp.ClientError as e:
-        logger.error(f"HTTP request error in fetch_image: {e}")
+        logger.error(f"HTTP error in fetch_image: {e}")
     except IOError as e:
         logger.error(f"I/O error in fetch_image: {e}")
     except Exception as e:
@@ -57,68 +63,120 @@ async def fetch_image(url, size=(1280, 720)):
     return None
 
 
-async def _get_movie_details_from_tmdb_direct(query):
-    """Fallback: query TMDB API directly when bharath-boy-api is unavailable."""
+async def _tmdb_search(query: str):
+    """
+    Query TMDB API directly using the real TMDB API key.
+    Returns a normalized details dict or None.
+    """
     if not TMDB_API_KEY:
+        logger.warning("TMDB_API_KEY is not set, skipping TMDB lookup.")
         return None
+
     q = str(query).strip()
-    # Extract year from query if present
-    year_match = re.search(r'\b((?:19|20)\d{2})\b', q)
+    year_match = re.search(r'\b((?:19|20)\d{2})\s*$', q)
     year = year_match.group(1) if year_match else None
     title = q[:year_match.start()].strip() if year_match else q
+
     try:
         connector = aiohttp.TCPConnector(family=socket.AF_INET)
-        timeout = aiohttp.ClientTimeout(total=10)
+        timeout = aiohttp.ClientTimeout(total=12)
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+
+            # 1. Search TMDB
             params = {"api_key": TMDB_API_KEY, "query": title, "page": 1}
             if year:
                 params["year"] = year
             async with session.get(f"{TMDB_BASE}/search/multi", params=params) as resp:
+                if resp.status == 401:
+                    logger.error("TMDB API key is invalid (401). Set a valid TMDB_API_KEY env var from themoviedb.org.")
+                    return None
                 if resp.status != 200:
+                    logger.error(f"TMDB search failed [{resp.status}] for query='{q}'")
                     return None
                 data = await resp.json()
                 results = [x for x in data.get("results", []) if x.get("media_type") != "person"]
+
+            # Retry without year if no results
             if not results and year:
-                params.pop("year", None)
-                async with session.get(f"{TMDB_BASE}/search/multi", params=params) as resp2:
+                async with session.get(
+                    f"{TMDB_BASE}/search/multi",
+                    params={"api_key": TMDB_API_KEY, "query": title, "page": 1}
+                ) as resp2:
                     if resp2.status == 200:
                         results = [x for x in (await resp2.json()).get("results", []) if x.get("media_type") != "person"]
+
             if not results:
+                logger.info(f"TMDB: no results for '{q}'")
                 return None
+
+            # Pick best match (exact title preferred)
             tl = title.lower()
-            item = next((x for x in results if (x.get("title") or x.get("name") or "").lower() == tl), results[0])
-            mt = item.get("media_type", "movie")
+            item = next(
+                (x for x in results if (x.get("title") or x.get("name") or "").lower() == tl),
+                results[0]
+            )
+            mt  = item.get("media_type", "movie")
             iid = item.get("id")
+
+            # 2. Fetch full details with credits
             detail = None
-            async with session.get(f"{TMDB_BASE}/{mt}/{iid}",
-                                   params={"api_key": TMDB_API_KEY, "append_to_response": "credits"}) as dr:
+            async with session.get(
+                f"{TMDB_BASE}/{mt}/{iid}",
+                params={"api_key": TMDB_API_KEY, "append_to_response": "credits"}
+            ) as dr:
                 if dr.status == 200:
                     detail = await dr.json()
-        src = detail or item
+
+        src        = detail or item
         genres_raw = [g["name"] for g in src.get("genres", [])] if detail else []
-        cr = (detail or {}).get("credits", {})
-        cast = [c["name"] for c in cr.get("cast", [])[:6]]
-        dirs = [c["name"] for c in cr.get("crew", []) if c.get("job") == "Director"][:2]
-        poster_path = src.get("poster_path")
+        cr         = (detail or {}).get("credits", {})
+        cast       = [c["name"] for c in cr.get("cast", [])[:6]]
+        dirs       = [c["name"] for c in cr.get("crew", []) if c.get("job") == "Director"][:2]
+
+        poster_path   = src.get("poster_path")
         backdrop_path = src.get("backdrop_path")
-        return {
-            "title": src.get("title") or src.get("name", query),
-            "year": (src.get("release_date") or src.get("first_air_date") or "")[:4] or year,
-            "poster_url": f"{TMDB_IMG}{poster_path}" if poster_path else None,
-            "backdrop_url": f"{TMDB_BACK}{backdrop_path}" if backdrop_path else None,
-            "rating": round(float(src.get("vote_average", 0) or 0), 1),
-            "genres": ", ".join(genres_raw),
-            "cast": ", ".join(cast),
-            "director": ", ".join(dirs),
-            "tmdb_url": f"https://www.themoviedb.org/{mt}/{iid}",
-            "url": f"https://www.themoviedb.org/{mt}/{iid}",
+
+        poster_url   = f"{TMDB_IMG}{poster_path}"   if poster_path   else None
+        backdrop_url = f"{TMDB_BACK}{backdrop_path}" if backdrop_path else None
+
+        result = {
+            "title":        src.get("title") or src.get("name", query),
+            "year":         (src.get("release_date") or src.get("first_air_date") or "")[:4] or year,
+            "poster_url":   poster_url,
+            "backdrop_url": backdrop_url,
+            "rating":       round(float(src.get("vote_average", 0) or 0), 1),
+            "genres":       ", ".join(genres_raw),
+            "cast":         ", ".join(cast),
+            "director":     ", ".join(dirs),
+            "tmdb_url":     f"https://www.themoviedb.org/{mt}/{iid}",
+            "url":          f"https://www.themoviedb.org/{mt}/{iid}",
         }
+        logger.info(f"TMDB success for '{q}': {result['title']} ({result['year']}), poster={bool(poster_url)}, backdrop={bool(backdrop_url)}")
+        return result
+
     except Exception as e:
-        logger.error(f"Direct TMDB fallback error: {e}")
+        logger.error(f"TMDB lookup error for '{q}': {type(e).__name__}: {e}")
         return None
 
 
+async def get_movie_detailsx(query, id=False, file=None):
+    """
+    Primary movie details fetcher when TMDB_POSTER=True.
+
+    The bharath-boy-api (previously used) is permanently disabled (returns 402).
+    This function now queries the real TMDB API directly.
+    Falls back to IMDB via the error flag so channel.py can call get_movie_details().
+    """
+    q = str(query).strip()
+    result = await _tmdb_search(q)
+    if result:
+        return result
+    # Signal to channel.py to fall back to IMDB
+    return {"error": True, "message": f"TMDB found no results for '{q}'"}
+
+
 async def get_movie_details(query, id=False, file=None):
+    """IMDB-based details fetcher (fallback when TMDB fails or TMDB_POSTER=False)."""
     try:
         if not id:
             query = query.strip().lower()
@@ -189,6 +247,7 @@ async def get_movie_details(query, id=False, file=None):
             'year': movie.get('year'),
             'genres': list_to_str(movie.get("genres")),
             'poster_url': poster_url,
+            'backdrop_url': None,   # IMDB has no backdrop
             'plot': plot,
             'rating': str(movie.get("rating", "N/A")),
             'url': f'https://www.imdb.com/title/tt{movieid}'
@@ -196,70 +255,3 @@ async def get_movie_details(query, id=False, file=None):
     except Exception as e:
         logger.error(f"An error occurred in get_movie_details: {e}")
         return None
-
-async def get_movie_detailsx(query, id=False, file=None):
-    base_url = "https://bharath-boy-api.vercel.app/api/movie-posters"
-    q = str(query).strip()
-    try:
-        connector = aiohttp.TCPConnector(family=socket.AF_INET)
-        timeout = aiohttp.ClientTimeout(total=10)
-        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-            params = {"query": q, "api_key": TMDB_API_KEY}
-            async with session.get(base_url, params=params) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    logger.error(f"API request failed [{resp.status}] for query={q}\n {text}")
-                    # bharath-boy-api is down — try direct TMDB API
-                    direct = await _get_movie_details_from_tmdb_direct(q)
-                    if direct:
-                        return direct
-                    return {"error": True, "status": resp.status, "message": text}
-                data = await resp.json()
-    except Exception as e:
-        logger.error(f"An error occurred in get_movie_detailsx: {e}")
-        # Network error — try direct TMDB API before giving up
-        direct = await _get_movie_details_from_tmdb_direct(q)
-        if direct:
-            return direct
-        return {"error": True, "message": str(e)}
-    # Normalize fields
-    details = {}
-    details['title'] = data.get('title') or data.get('localized_title')
-    details['year'] = (data.get('year', 0)) if data.get('year') else None
-    details['release_date'] = data.get('release_date')
-    details['rating'] = round(float(data.get('rating', 0)), 1) if data.get('rating') is not None else None
-    details['votes'] = int(data.get('votes', 0))
-    details['runtime'] = data.get('runtime')
-    details['certificates'] = data.get('certificates')
-    details['tmdb_url'] = data.get('url')
-    for key in ('genres', 'languages', 'countries'):
-        raw = data.get(key)
-        details[key] = [s.strip() for s in raw.split(',')] if raw else []
-    for role in ('director', 'writer', 'producer', 'composer', 'cinematographer', 'cast'):
-        raw = data.get(role)
-        details[role] = [s.strip() for s in raw.split(',')] if raw else []
-    details['plot'] = data.get('plot')
-    details['tagline'] = data.get('tagline')
-    details['box_office'] = (data.get('box_office', 0)) if data.get('box_office') else None
-    raw_dist = data.get('distributors')
-    details['distributors'] = [d.strip() for d in raw_dist.split(',')] if raw_dist else []
-    details['imdb_id'] = data.get('imdb_id')
-    details['tmdb_id'] = data.get('tmdb_id')
-    posters = data.get('images', {}).get('posters', {})
-    original_language = data.get('images', {}).get('original_language')
-    poster_url = data.get('poster_url')
-    if not poster_url:
-        for key in ('en', original_language, 'no_lang'):
-            if key and posters.get(key):
-                poster_url = posters[key][0]
-                break
-    details['poster_url'] = poster_url
-    backdrops = data.get('images', {}).get('backdrops', {})
-    original_language = data.get('images', {}).get('original_language')
-    backdrop_url = None
-    for key in ('en', original_language, 'no_lang'):
-        if key and backdrops.get(key):
-            backdrop_url = backdrops[key][0]
-            break
-    details['backdrop_url'] = backdrop_url
-    return details
