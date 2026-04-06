@@ -70,17 +70,10 @@ async def start(client: Client, message):
         )
 
     if len(message.command) == 2 and data.startswith('getfile'):
-        try:
-            movies = message.command[1].split("-", 1)[1]
-            movie = movies.replace('-', ' ').strip()
-        except (IndexError, ValueError):
-            await message.reply("<b>❌ Invalid getfile link.</b>", parse_mode=enums.ParseMode.HTML)
-            return
-        if not movie:
-            await message.reply("<b>❌ Movie name missing in link.</b>", parse_mode=enums.ParseMode.HTML)
-            return
-        message.text = movie
-        await auto_filter(client, message)
+        movies = message.command[1].split("-", 1)[1] 
+        movie = movies.replace('-',' ')
+        message.text = movie 
+        await auto_filter(client, message) 
         return
 
     # ── miniapp deeplink: ?start=miniapp_FILEID ──────────────────────────────
