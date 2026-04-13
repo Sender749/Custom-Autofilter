@@ -525,214 +525,362 @@ def generate_movie_message(movie_doc, base_name):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# /m {movie name} {year}   — admin-only manual movie-update trigger
-# Searches the database (file_name + caption) for matching files, builds the
-# same movie-update message that auto-indexing would produce, and sends/edits
-# it in MOVIE_UPDATE_CHANNEL.  Year is optional.
+# /m {movie/series name} [{year} | {s01}]  — admin-only manual notification
+#
+# Completely independent from the auto-update flow.
+# Steps:
+#   1. Parse query — optional trailing year OR season tag (s01, s1, s02 …)
+#   2. Search the main file database (file_name + caption)
+#   3. Build the notification message on-the-fly from matched files
+#   4. Delete any previous notification for that title from MOVIE_UPDATE_CHANNEL
+#      (looked up in movie_updates collection)
+#   5. Send a fresh notification and record its message_id
 # ──────────────────────────────────────────────────────────────────────────────
+
+# Regex to detect a trailing season hint like s01 / s1 / s02
+_SEASON_HINT_RE = re.compile(r'\bs(\d{1,2})\s*$', re.IGNORECASE)
+# Regex to detect a trailing year hint like 2023 / 2024
+_YEAR_HINT_RE   = re.compile(r'\b((?:19|20)\d{2})\s*$')
 
 @Client.on_message(filters.command("m") & filters.user(ADMINS))
 async def manual_movie_update(bot, message):
     """
-    Usage:  /m <movie name> [year]
-    - Searches database by name (+ optional year) using both file_name and caption.
-    - Builds a movie-update notification from matched files.
-    - Sends a new message or edits the existing one in MOVIE_UPDATE_CHANNEL.
-    - Only files that are not already tracked for that base_name are added.
+    Usage:
+      /m <movie name> [year]     — e.g.  /m Pushpa 2025  or  /m Interstellar
+      /m <series name> [sNN]     — e.g.  /m Mirzapur s02
     """
     args = message.text.strip().split(None, 1)
     if len(args) < 2 or not args[1].strip():
         return await message.reply_text(
             "<b>ʜᴏᴡ ᴛᴏ ᴜsᴇ:</b>\n"
-            "<code>/m &lt;movie name&gt; [year]</code>\n\n"
+            "<code>/m &lt;movie name&gt; [year]</code>\n"
+            "<code>/m &lt;series name&gt; [sNN]</code>\n\n"
             "<b>ᴇxᴀᴍᴘʟᴇs:</b>\n"
             "• <code>/m Pushpa 2025</code>\n"
-            "• <code>/m Pushpa</code>",
+            "• <code>/m Interstellar</code>\n"
+            "• <code>/m Mirzapur s02</code>\n"
+            "• <code>/m Dark s01</code>",
             parse_mode=enums.ParseMode.HTML
         )
 
     raw_input = args[1].strip()
 
-    # ── Parse optional trailing year ──────────────────────────────────────────
-    year_match = re.search(r'\b((?:19|20)\d{2})\s*$', raw_input)
-    if year_match:
-        search_year = year_match.group(1)
-        movie_name  = raw_input[:year_match.start()].strip()
+    # ── Parse optional trailing season hint  e.g. s01 / s1 / s02 ─────────────
+    season_hint = None
+    season_num  = None
+    sm = _SEASON_HINT_RE.search(raw_input)
+    if sm:
+        season_num  = int(sm.group(1))
+        season_hint = sm.group(0)                     # e.g. "s02"
+        title_query = raw_input[:sm.start()].strip()
     else:
-        search_year = None
-        movie_name  = raw_input
+        # ── Parse optional trailing year hint  e.g. 2024 ──────────────────────
+        ym = _YEAR_HINT_RE.search(raw_input)
+        if ym:
+            year_hint   = ym.group(1)
+            title_query = raw_input[:ym.start()].strip()
+        else:
+            year_hint   = None
+            title_query = raw_input
 
-    if not movie_name:
-        return await message.reply_text("<b>❌ ᴘʟᴇᴀsᴇ ᴘʀᴏᴠɪᴅᴇ ᴀ ᴍᴏᴠɪᴇ ɴᴀᴍᴇ.</b>", parse_mode=enums.ParseMode.HTML)
+    if not title_query:
+        return await message.reply_text(
+            "<b>❌ ᴘʟᴇᴀsᴇ ᴘʀᴏᴠɪᴅᴇ ᴀ ᴍᴏᴠɪᴇ ᴏʀ sᴇʀɪᴇs ɴᴀᴍᴇ.</b>",
+            parse_mode=enums.ParseMode.HTML
+        )
 
-    query = f"{movie_name} {search_year}" if search_year else movie_name
+    # Build the DB search query  (title  +  season-hint  or  year-hint)
+    if season_hint:
+        db_query = f"{title_query} {season_hint}"
+    elif year_hint:
+        db_query = f"{title_query} {year_hint}"
+    else:
+        db_query = title_query
 
     status_msg = await message.reply_text(
-        f"<b>🔍 sᴇᴀʀᴄʜɪɴɢ ᴅᴀᴛᴀʙᴀsᴇ ꜰᴏʀ:</b> <code>{query}</code>",
+        f"<b>🔍 sᴇᴀʀᴄʜɪɴɢ ᴅᴀᴛᴀʙᴀsᴇ ꜰᴏʀ:</b> <code>{db_query}</code>",
         parse_mode=enums.ParseMode.HTML
     )
 
+    # ── Search the file database ───────────────────────────────────────────────
     try:
-        # Fetch up to 200 results so we cover all quality/language variants
-        files, _, total = await get_search_results(query, max_results=200, offset=0)
+        files, _, total = await get_search_results(db_query, max_results=300, offset=0)
     except Exception as e:
-        logger.exception("Manual movie update – DB search failed: %s", e)
-        return await status_msg.edit_text("<b>❌ ᴅᴀᴛᴀʙᴀsᴇ sᴇᴀʀᴄʜ ꜰᴀɪʟᴇᴅ.</b>", parse_mode=enums.ParseMode.HTML)
+        logger.exception("Manual /m – DB search failed: %s", e)
+        return await status_msg.edit_text(
+            "<b>❌ ᴅᴀᴛᴀʙᴀsᴇ sᴇᴀʀᴄʜ ꜰᴀɪʟᴇᴅ.</b>",
+            parse_mode=enums.ParseMode.HTML
+        )
 
     if not files:
         return await status_msg.edit_text(
-            f"<b>😕 ɴᴏ ꜰɪʟᴇs ꜰᴏᴜɴᴅ ꜰᴏʀ:</b> <code>{query}</code>",
+            f"<b>😕 ɴᴏ ꜰɪʟᴇs ꜰᴏᴜɴᴅ ꜰᴏʀ:</b> <code>{db_query}</code>",
+            parse_mode=enums.ParseMode.HTML
+        )
+
+    # ── Filter results to only the season requested (if season_hint given) ─────
+    # Also apply a loose title check so unrelated results don't sneak in
+    title_words = set(title_query.lower().split())
+
+    def _file_matches(file_doc):
+        fname   = (file_doc.get("file_name") or "").lower()
+        cap     = (file_doc.get("caption")   or "").lower()
+        combined = f"{fname} {cap}"
+        # Title words must all appear somewhere
+        if not all(w in combined for w in title_words):
+            return False
+        if season_num is not None:
+            # must have S<season_num> pattern
+            if not re.search(rf'\bs0*{season_num}\b', combined, re.IGNORECASE):
+                return False
+        elif 'year_hint' in dir() and year_hint:       # noqa: F821 — always defined above
+            if year_hint not in combined:
+                return False
+        return True
+
+    # rebuild year_hint reference safely
+    _year_hint = year_hint if season_hint is None else None
+
+    def _file_matches_safe(file_doc):
+        fname    = (file_doc.get("file_name") or "").lower()
+        cap      = (file_doc.get("caption")   or "").lower()
+        combined = f"{fname} {cap}"
+        if not all(w in combined for w in title_words):
+            return False
+        if season_num is not None:
+            if not re.search(rf'\bs0*{season_num}\b', combined, re.IGNORECASE):
+                return False
+        elif _year_hint:
+            if _year_hint not in combined:
+                return False
+        return True
+
+    matched_files = [f for f in files if _file_matches_safe(f)]
+
+    if not matched_files:
+        return await status_msg.edit_text(
+            f"<b>😕 ɴᴏ ᴍᴀᴛᴄʜɪɴɢ ꜰɪʟᴇs ꜰᴏᴜɴᴅ ꜰᴏʀ:</b> <code>{db_query}</code>",
             parse_mode=enums.ParseMode.HTML
         )
 
     await status_msg.edit_text(
-        f"<b>✅ ꜰᴏᴜɴᴅ {total} ꜰɪʟᴇ(s). ʙᴜɪʟᴅɪɴɢ ᴜᴘᴅᴀᴛᴇ ᴍᴇssᴀɢᴇ…</b>",
+        f"<b>⚙️ ꜰᴏᴜɴᴅ {len(matched_files)} ꜰɪʟᴇ(s). ʙᴜɪʟᴅɪɴɢ ɴᴏᴛɪꜰɪᴄᴀᴛɪᴏɴ…</b>",
         parse_mode=enums.ParseMode.HTML
     )
 
-    if not hasattr(db, 'movie_updates'):
-        db.movie_updates = db.db.movie_updates
+    # ── Build notification data on-the-fly from the matched files ─────────────
+    # We do NOT touch movie_updates tracking — this is a fresh standalone send.
+    all_qualities    = set()
+    all_languages    = set()
+    all_ott_platforms= set()
+    all_tags         = set()
+    episodes_by_season = defaultdict(set)
+    base_name_used   = None
+    _local_error_tmdb = False
 
-    added_count = 0
-    base_name_used = None
-
-    for file_doc in files:
-        filename = file_doc.get("file_name", "")
-        caption  = file_doc.get("caption", "") or ""
-
-        # Skip files that don't contain the year if year was specified
-        if search_year and search_year not in filename and search_year not in caption:
-            continue
-
+    for file_doc in matched_files:
+        filename = file_doc.get("file_name") or ""
+        caption  = file_doc.get("caption")  or ""
         try:
-            media_info = extract_media_info(filename, caption)
+            info = extract_media_info(filename, caption)
         except Exception:
             continue
 
-        base_name = media_info["base_name"]
-        processed = media_info["processed"]
-
-        # Use the first matched base_name as the canonical one for this command
+        # Anchor to the first base_name we derive; skip outliers
         if base_name_used is None:
-            base_name_used = base_name
-        elif base_name != base_name_used:
-            # Only process files that resolve to the same base_name
+            base_name_used = info["base_name"]
+        elif info["base_name"] != base_name_used:
             continue
 
-        # Build a dummy source_chat-like channel link (no live source chat available)
-        # We mark these as coming from the MOVIE_UPDATE_CHANNEL itself as a placeholder
-        channel_link = f"https://t.me/c/{str(MOVIE_UPDATE_CHANNEL)[4:]}" if str(MOVIE_UPDATE_CHANNEL).startswith("-100") else f"https://t.me/c/{MOVIE_UPDATE_CHANNEL}"
+        if info["quality"] != "N/A":
+            all_qualities.update(q.strip() for q in info["quality"].split(",") if q.strip())
+        if info["language"] != "N/A":
+            all_languages.update(l.strip() for l in info["language"].split(",") if l.strip())
+        if info["ott_platform"] != "N/A":
+            all_ott_platforms.update(p.strip() for p in info["ott_platform"].split("|") if p.strip())
+        if info["tag"]:
+            all_tags.add(info["tag"])
+        if info.get("season") and info.get("episode"):
+            episodes_by_season[info["season"]].add(info["episode"])
 
-        file_data = {
-            "filename": filename,
-            "processed": processed,
-            "quality": media_info["quality"],
-            "language": media_info["language"],
-            "ott_platform": media_info["ott_platform"],
-            "timestamp": datetime.now(),
-            "tag": media_info["tag"],
-            "season": media_info["season"],
-            "episode": media_info["episode"],
-            "source_channel": channel_link
-        }
-
-        lock = locks[base_name]
-        async with lock:
-            try:
-                movie_doc = await db.movie_updates.find_one({"_id": base_name})
-                if movie_doc:
-                    # Only add files that aren't already tracked
-                    existing_filenames = {f["filename"] for f in movie_doc.get("files", [])}
-                    if filename in existing_filenames:
-                        continue
-                    await db.movie_updates.update_one(
-                        {"_id": base_name},
-                        {"$push": {"files": file_data}}
-                    )
-                    added_count += 1
-                else:
-                    # New entry – fetch poster/details exactly like the auto handler
-                    global error_tmdb
-                    error_tmdb = False
-                    if TMDB_POSTER:
-                        details = await get_movie_detailsx(base_name)
-                        if details.get("error"):
-                            error_tmdb = True
-                            details = await get_movie_details(base_name) or {}
-                    else:
-                        details = await get_movie_details(base_name) or {}
-
-                    raw_genres = details.get("genres", "N/A")
-                    if isinstance(raw_genres, str):
-                        genre_list = [g.strip() for g in raw_genres.split(",")]
-                        genres = ", ".join(g for g in genre_list if g in STANDARD_GENRES) or "N/A"
-                    else:
-                        genres = ", ".join(g for g in raw_genres if g in STANDARD_GENRES) or "N/A"
-
-                    new_doc = {
-                        "_id": base_name,
-                        "files": [file_data],
-                        "poster_url": details.get("backdrop_url") if LANDSCAPE_POSTER and TMDB_POSTER and not error_tmdb else details.get("poster_url"),
-                        "genres": genres,
-                        "rating": details.get("rating", "N/A"),
-                        "imdb_url": details.get("url", "") if not TMDB_POSTER else details.get("tmdb_url"),
-                        "year": media_info["year"] or details.get("year"),
-                        "tag": media_info["tag"],
-                        "ott_platform": media_info["ott_platform"],
-                        "message_id": None,
-                        "is_photo": False
-                    }
-                    try:
-                        await db.movie_updates.insert_one(new_doc)
-                        added_count += 1
-                    except DuplicateKeyError:
-                        # Race condition – another insert beat us; push the file instead
-                        movie_doc = await db.movie_updates.find_one({"_id": base_name})
-                        if movie_doc:
-                            existing_filenames = {f["filename"] for f in movie_doc.get("files", [])}
-                            if filename not in existing_filenames:
-                                await db.movie_updates.update_one(
-                                    {"_id": base_name},
-                                    {"$push": {"files": file_data}}
-                                )
-                                added_count += 1
-            except Exception as e:
-                logger.exception("Manual movie update – processing file '%s': %s", filename, e)
-
-    if added_count == 0 and base_name_used:
-        # All matched files were already tracked – just (re-)send/update the message
-        movie_doc = await db.movie_updates.find_one({"_id": base_name_used})
-        if movie_doc:
-            await update_movie_message(bot, base_name_used)
-            return await status_msg.edit_text(
-                f"<b>♻️ ᴀʟʟ ꜰɪʟᴇs ᴀʟʀᴇᴀᴅʏ ᴛʀᴀᴄᴋᴇᴅ. ᴜᴘᴅᴀᴛᴇᴅ ᴇxɪsᴛɪɴɢ ɴᴏᴛɪꜰɪᴄᴀᴛɪᴏɴ.</b>",
-                parse_mode=enums.ParseMode.HTML
-            )
+    if not base_name_used:
         return await status_msg.edit_text(
-            f"<b>😕 ɴᴏ ɴᴇᴡ ꜰɪʟᴇs ᴛᴏ ᴀᴅᴅ ꜰᴏʀ:</b> <code>{query}</code>",
+            f"<b>😕 ᴄᴏᴜʟᴅ ɴᴏᴛ ʀᴇsᴏʟᴠᴇ ᴛɪᴛʟᴇ ꜰʀᴏᴍ ꜰɪʟᴇs.</b>",
             parse_mode=enums.ParseMode.HTML
         )
 
-    if base_name_used is None:
-        return await status_msg.edit_text(
-            f"<b>😕 ɴᴏ ᴍᴀᴛᴄʜɪɴɢ ꜰɪʟᴇs ꜰᴏᴜɴᴅ ꜰᴏʀ:</b> <code>{query}</code>",
-            parse_mode=enums.ParseMode.HTML
-        )
-
-    # Trigger send/edit for the notification
-    movie_doc = await db.movie_updates.find_one({"_id": base_name_used})
-    if movie_doc and movie_doc.get("message_id"):
-        await update_movie_message(bot, base_name_used)
+    # ── Fetch poster / details (same logic as auto handler) ───────────────────
+    if TMDB_POSTER:
+        details = await get_movie_detailsx(base_name_used)
+        if details.get("error"):
+            _local_error_tmdb = True
+            details = await get_movie_details(base_name_used) or {}
     else:
-        await send_movie_update(bot, base_name_used)
+        details = await get_movie_details(base_name_used) or {}
 
-    await status_msg.edit_text(
-        f"<b>✅ ᴍᴏᴠɪᴇ ᴜᴘᴅᴀᴛᴇ sᴇɴᴛ!</b>\n\n"
-        f"📽 <b>{base_name_used}</b>\n"
-        f"📂 ɴᴇᴡ ꜰɪʟᴇs ᴀᴅᴅᴇᴅ: <b>{added_count}</b>",
-        parse_mode=enums.ParseMode.HTML
+    raw_genres = details.get("genres", "N/A")
+    if isinstance(raw_genres, str):
+        genres = ", ".join(g.strip() for g in raw_genres.split(",") if g.strip() in STANDARD_GENRES) or "N/A"
+    else:
+        genres = ", ".join(g for g in raw_genres if g in STANDARD_GENRES) or "N/A"
+
+    poster_url = (
+        details.get("backdrop_url")
+        if LANDSCAPE_POSTER and TMDB_POSTER and not _local_error_tmdb
+        else details.get("poster_url")
+    )
+    imdb_url = details.get("url", "") if not TMDB_POSTER else details.get("tmdb_url", "")
+    rating   = details.get("rating", "N/A")
+
+    # ── Build episode block ────────────────────────────────────────────────────
+    epi_block = ""
+    if episodes_by_season:
+        episode_lines = []
+        for sn, episodes in sorted(episodes_by_season.items(), key=lambda x: int(x[0])):
+            singles, ranges = [], []
+            for ep in episodes:
+                if "-" in ep:
+                    ranges.append(ep)
+                else:
+                    try:
+                        singles.append(int(ep))
+                    except ValueError:
+                        ranges.append(ep)
+            singles.sort()
+            collapsed, start, end = [], None, None
+            for num in singles:
+                if start is None:
+                    start = end = num
+                elif num == end + 1:
+                    end = num
+                else:
+                    collapsed.append(str(start) if start == end else f"{start}-{end}")
+                    start = end = num
+            if start is not None:
+                collapsed.append(str(start) if start == end else f"{start}-{end}")
+            all_ep_parts = collapsed + sorted(ranges, key=lambda s: int(s.split("-")[0]))
+            episode_lines.append(f"S{int(sn)}: {', '.join(all_ep_parts)}")
+        epi_str = " ".join(episode_lines)
+        if epi_str:
+            epi_block = f"📺 ᴇᴘɪsᴏᴅᴇs : <b>{epi_str}</b>"
+
+    primary_tag  = "#SERIES" if "#SERIES" in all_tags else "#MOVIE"
+    quality_str  = ", ".join(sorted(all_qualities))  if all_qualities   else "N/A"
+    language_str = ", ".join(sorted(all_languages))  if all_languages   else "N/A"
+    ott_str      = ", ".join(sorted(all_ott_platforms)) if all_ott_platforms else "N/A"
+
+    # Build a temporary doc just for generate_movie_message
+    temp_doc = {
+        "files":      [],          # not needed — we aggregate above
+        "poster_url": poster_url or "",
+        "imdb_url":   imdb_url,
+        "genres":     genres,
+        "rating":     rating,
+        "tag":        primary_tag,
+    }
+
+    notify_text = script.MOVIE_UPDATE_NOTIFY_TXT.format(
+        poster_url  = poster_url or "",
+        imdb_url    = imdb_url,
+        filename    = base_name_used,
+        tag         = primary_tag,
+        genres      = genres,
+        ott         = ott_str,
+        quality     = quality_str,
+        language    = language_str,
+        episodes    = epi_block,
+        rating      = rating,
+        search_link = temp.B_LINK
     )
 
+    # Button pointing to MOVIE_UPDATE_CHANNEL (where users fetch files)
+    channel_link = (
+        f"https://t.me/c/{str(MOVIE_UPDATE_CHANNEL)[4:]}"
+        if str(MOVIE_UPDATE_CHANNEL).startswith("-100")
+        else f"https://t.me/c/{MOVIE_UPDATE_CHANNEL}"
+    )
+    reply_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✨ ɢᴇᴛ ᴅɪʀᴇᴄᴛ ꜰɪʟᴇ ✨", url=channel_link)]
+    ])
 
+    # ── Delete the previous notification for this title (if any) ──────────────
+    if not hasattr(db, 'movie_updates'):
+        db.movie_updates = db.db.movie_updates
 
+    old_doc = await db.movie_updates.find_one({"_id": base_name_used})
+    if old_doc and old_doc.get("message_id"):
+        try:
+            await bot.delete_messages(
+                chat_id=MOVIE_UPDATE_CHANNEL,
+                message_ids=old_doc["message_id"]
+            )
+        except Exception:
+            pass  # already deleted or invalid — no problem
 
+    # ── Send the fresh notification ────────────────────────────────────────────
+    try:
+        if poster_url and not LINK_PREVIEW:
+            resized = await fetch_image(
+                poster_url,
+                size=(2560, 1440) if LANDSCAPE_POSTER and TMDB_POSTER and not _local_error_tmdb else (853, 1280)
+            )
+            sent_msg = await bot.send_photo(
+                chat_id    = MOVIE_UPDATE_CHANNEL,
+                photo      = resized,
+                caption    = notify_text,
+                reply_markup = reply_markup,
+                parse_mode = enums.ParseMode.HTML
+            )
+            is_photo = True
+        else:
+            send_params = {
+                "chat_id":      MOVIE_UPDATE_CHANNEL,
+                "text":         notify_text,
+                "reply_markup": reply_markup,
+                "parse_mode":   enums.ParseMode.HTML,
+            }
+            if poster_url and LINK_PREVIEW:
+                send_params["invert_media"] = ABOVE_PREVIEW
+            else:
+                send_params["disable_web_page_preview"] = True
+            sent_msg = await bot.send_message(**send_params)
+            is_photo = False
+    except FloodWait as e:
+        await asyncio.sleep(e.value + 2)
+        return await status_msg.edit_text(
+            "<b>⏳ ꜰʟᴏᴏᴅ ᴡᴀɪᴛ. ᴘʟᴇᴀsᴇ ʀᴇᴛʀʏ ɪɴ ᴀ ᴍᴏᴍᴇɴᴛ.</b>",
+            parse_mode=enums.ParseMode.HTML
+        )
+    except Exception as e:
+        logger.exception("Manual /m – failed to send notification: %s", e)
+        return await status_msg.edit_text(
+            f"<b>❌ ꜰᴀɪʟᴇᴅ ᴛᴏ sᴇɴᴅ ɴᴏᴛɪꜰɪᴄᴀᴛɪᴏɴ: {e}</b>",
+            parse_mode=enums.ParseMode.HTML
+        )
+
+    # ── Persist the new message_id so future /m calls can delete it ───────────
+    update_payload = {
+        "message_id": sent_msg.id,
+        "is_photo":   is_photo,
+        "tag":        primary_tag,
+        "ott_platform": ott_str,
+        "genres":     genres,
+        "rating":     rating,
+        "poster_url": poster_url or "",
+        "imdb_url":   imdb_url,
+    }
+    if old_doc:
+        await db.movie_updates.update_one(
+            {"_id": base_name_used},
+            {"$set": update_payload}
+        )
+    else:
+        await db.movie_updates.insert_one({"_id": base_name_used, "files": [], **update_payload})
+
+    label = f"{base_name_used}" + (f" [{season_hint.upper()}]" if season_hint else "")
+    await status_msg.edit_text(
+        f"<b>✅ ɴᴏᴛɪꜰɪᴄᴀᴛɪᴏɴ sᴇɴᴛ!</b>\n\n"
+        f"📽 <b>{label}</b>\n"
+        f"📂 ꜰɪʟᴇs ᴜsᴇᴅ: <b>{len(matched_files)}</b>",
+        parse_mode=enums.ParseMode.HTML
+    )
