@@ -6,9 +6,9 @@ from collections import defaultdict
 from plugins.helper.Imdbposter import get_movie_detailsx, fetch_image, get_movie_details
 from database.users_chats_db import db
 from pyrogram import Client, filters, enums
-from info import CHANNELS, MOVIE_UPDATE_CHANNEL, LINK_PREVIEW, ABOVE_PREVIEW, LANDSCAPE_POSTER, TMDB_POSTER, FETCH_MOVIE_UPDATE
+from info import CHANNELS, MOVIE_UPDATE_CHANNEL, LINK_PREVIEW, ABOVE_PREVIEW, LANDSCAPE_POSTER, TMDB_POSTER, FETCH_MOVIE_UPDATE, ADMINS
 from Script import script
-from database.ia_filterdb import save_file
+from database.ia_filterdb import save_file, get_search_results
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from utils import temp
 from pymongo.errors import PyMongoError, DuplicateKeyError
@@ -524,8 +524,214 @@ def generate_movie_message(movie_doc, base_name):
     )
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# /m {movie name} {year}   — admin-only manual movie-update trigger
+# Searches the database (file_name + caption) for matching files, builds the
+# same movie-update message that auto-indexing would produce, and sends/edits
+# it in MOVIE_UPDATE_CHANNEL.  Year is optional.
+# ──────────────────────────────────────────────────────────────────────────────
 
+@Client.on_message(filters.command("m") & filters.user(ADMINS))
+async def manual_movie_update(bot, message):
+    """
+    Usage:  /m <movie name> [year]
+    - Searches database by name (+ optional year) using both file_name and caption.
+    - Builds a movie-update notification from matched files.
+    - Sends a new message or edits the existing one in MOVIE_UPDATE_CHANNEL.
+    - Only files that are not already tracked for that base_name are added.
+    """
+    args = message.text.strip().split(None, 1)
+    if len(args) < 2 or not args[1].strip():
+        return await message.reply_text(
+            "<b>ʜᴏᴡ ᴛᴏ ᴜsᴇ:</b>\n"
+            "<code>/m &lt;movie name&gt; [year]</code>\n\n"
+            "<b>ᴇxᴀᴍᴘʟᴇs:</b>\n"
+            "• <code>/m Pushpa 2025</code>\n"
+            "• <code>/m Pushpa</code>",
+            parse_mode=enums.ParseMode.HTML
+        )
 
+    raw_input = args[1].strip()
+
+    # ── Parse optional trailing year ──────────────────────────────────────────
+    year_match = re.search(r'\b((?:19|20)\d{2})\s*$', raw_input)
+    if year_match:
+        search_year = year_match.group(1)
+        movie_name  = raw_input[:year_match.start()].strip()
+    else:
+        search_year = None
+        movie_name  = raw_input
+
+    if not movie_name:
+        return await message.reply_text("<b>❌ ᴘʟᴇᴀsᴇ ᴘʀᴏᴠɪᴅᴇ ᴀ ᴍᴏᴠɪᴇ ɴᴀᴍᴇ.</b>", parse_mode=enums.ParseMode.HTML)
+
+    query = f"{movie_name} {search_year}" if search_year else movie_name
+
+    status_msg = await message.reply_text(
+        f"<b>🔍 sᴇᴀʀᴄʜɪɴɢ ᴅᴀᴛᴀʙᴀsᴇ ꜰᴏʀ:</b> <code>{query}</code>",
+        parse_mode=enums.ParseMode.HTML
+    )
+
+    try:
+        # Fetch up to 200 results so we cover all quality/language variants
+        files, _, total = await get_search_results(query, max_results=200, offset=0)
+    except Exception as e:
+        logger.exception("Manual movie update – DB search failed: %s", e)
+        return await status_msg.edit_text("<b>❌ ᴅᴀᴛᴀʙᴀsᴇ sᴇᴀʀᴄʜ ꜰᴀɪʟᴇᴅ.</b>", parse_mode=enums.ParseMode.HTML)
+
+    if not files:
+        return await status_msg.edit_text(
+            f"<b>😕 ɴᴏ ꜰɪʟᴇs ꜰᴏᴜɴᴅ ꜰᴏʀ:</b> <code>{query}</code>",
+            parse_mode=enums.ParseMode.HTML
+        )
+
+    await status_msg.edit_text(
+        f"<b>✅ ꜰᴏᴜɴᴅ {total} ꜰɪʟᴇ(s). ʙᴜɪʟᴅɪɴɢ ᴜᴘᴅᴀᴛᴇ ᴍᴇssᴀɢᴇ…</b>",
+        parse_mode=enums.ParseMode.HTML
+    )
+
+    if not hasattr(db, 'movie_updates'):
+        db.movie_updates = db.db.movie_updates
+
+    added_count = 0
+    base_name_used = None
+
+    for file_doc in files:
+        filename = file_doc.get("file_name", "")
+        caption  = file_doc.get("caption", "") or ""
+
+        # Skip files that don't contain the year if year was specified
+        if search_year and search_year not in filename and search_year not in caption:
+            continue
+
+        try:
+            media_info = extract_media_info(filename, caption)
+        except Exception:
+            continue
+
+        base_name = media_info["base_name"]
+        processed = media_info["processed"]
+
+        # Use the first matched base_name as the canonical one for this command
+        if base_name_used is None:
+            base_name_used = base_name
+        elif base_name != base_name_used:
+            # Only process files that resolve to the same base_name
+            continue
+
+        # Build a dummy source_chat-like channel link (no live source chat available)
+        # We mark these as coming from the MOVIE_UPDATE_CHANNEL itself as a placeholder
+        channel_link = f"https://t.me/c/{str(MOVIE_UPDATE_CHANNEL)[4:]}" if str(MOVIE_UPDATE_CHANNEL).startswith("-100") else f"https://t.me/c/{MOVIE_UPDATE_CHANNEL}"
+
+        file_data = {
+            "filename": filename,
+            "processed": processed,
+            "quality": media_info["quality"],
+            "language": media_info["language"],
+            "ott_platform": media_info["ott_platform"],
+            "timestamp": datetime.now(),
+            "tag": media_info["tag"],
+            "season": media_info["season"],
+            "episode": media_info["episode"],
+            "source_channel": channel_link
+        }
+
+        lock = locks[base_name]
+        async with lock:
+            try:
+                movie_doc = await db.movie_updates.find_one({"_id": base_name})
+                if movie_doc:
+                    # Only add files that aren't already tracked
+                    existing_filenames = {f["filename"] for f in movie_doc.get("files", [])}
+                    if filename in existing_filenames:
+                        continue
+                    await db.movie_updates.update_one(
+                        {"_id": base_name},
+                        {"$push": {"files": file_data}}
+                    )
+                    added_count += 1
+                else:
+                    # New entry – fetch poster/details exactly like the auto handler
+                    global error_tmdb
+                    error_tmdb = False
+                    if TMDB_POSTER:
+                        details = await get_movie_detailsx(base_name)
+                        if details.get("error"):
+                            error_tmdb = True
+                            details = await get_movie_details(base_name) or {}
+                    else:
+                        details = await get_movie_details(base_name) or {}
+
+                    raw_genres = details.get("genres", "N/A")
+                    if isinstance(raw_genres, str):
+                        genre_list = [g.strip() for g in raw_genres.split(",")]
+                        genres = ", ".join(g for g in genre_list if g in STANDARD_GENRES) or "N/A"
+                    else:
+                        genres = ", ".join(g for g in raw_genres if g in STANDARD_GENRES) or "N/A"
+
+                    new_doc = {
+                        "_id": base_name,
+                        "files": [file_data],
+                        "poster_url": details.get("backdrop_url") if LANDSCAPE_POSTER and TMDB_POSTER and not error_tmdb else details.get("poster_url"),
+                        "genres": genres,
+                        "rating": details.get("rating", "N/A"),
+                        "imdb_url": details.get("url", "") if not TMDB_POSTER else details.get("tmdb_url"),
+                        "year": media_info["year"] or details.get("year"),
+                        "tag": media_info["tag"],
+                        "ott_platform": media_info["ott_platform"],
+                        "message_id": None,
+                        "is_photo": False
+                    }
+                    try:
+                        await db.movie_updates.insert_one(new_doc)
+                        added_count += 1
+                    except DuplicateKeyError:
+                        # Race condition – another insert beat us; push the file instead
+                        movie_doc = await db.movie_updates.find_one({"_id": base_name})
+                        if movie_doc:
+                            existing_filenames = {f["filename"] for f in movie_doc.get("files", [])}
+                            if filename not in existing_filenames:
+                                await db.movie_updates.update_one(
+                                    {"_id": base_name},
+                                    {"$push": {"files": file_data}}
+                                )
+                                added_count += 1
+            except Exception as e:
+                logger.exception("Manual movie update – processing file '%s': %s", filename, e)
+
+    if added_count == 0 and base_name_used:
+        # All matched files were already tracked – just (re-)send/update the message
+        movie_doc = await db.movie_updates.find_one({"_id": base_name_used})
+        if movie_doc:
+            await update_movie_message(bot, base_name_used)
+            return await status_msg.edit_text(
+                f"<b>♻️ ᴀʟʟ ꜰɪʟᴇs ᴀʟʀᴇᴀᴅʏ ᴛʀᴀᴄᴋᴇᴅ. ᴜᴘᴅᴀᴛᴇᴅ ᴇxɪsᴛɪɴɢ ɴᴏᴛɪꜰɪᴄᴀᴛɪᴏɴ.</b>",
+                parse_mode=enums.ParseMode.HTML
+            )
+        return await status_msg.edit_text(
+            f"<b>😕 ɴᴏ ɴᴇᴡ ꜰɪʟᴇs ᴛᴏ ᴀᴅᴅ ꜰᴏʀ:</b> <code>{query}</code>",
+            parse_mode=enums.ParseMode.HTML
+        )
+
+    if base_name_used is None:
+        return await status_msg.edit_text(
+            f"<b>😕 ɴᴏ ᴍᴀᴛᴄʜɪɴɢ ꜰɪʟᴇs ꜰᴏᴜɴᴅ ꜰᴏʀ:</b> <code>{query}</code>",
+            parse_mode=enums.ParseMode.HTML
+        )
+
+    # Trigger send/edit for the notification
+    movie_doc = await db.movie_updates.find_one({"_id": base_name_used})
+    if movie_doc and movie_doc.get("message_id"):
+        await update_movie_message(bot, base_name_used)
+    else:
+        await send_movie_update(bot, base_name_used)
+
+    await status_msg.edit_text(
+        f"<b>✅ ᴍᴏᴠɪᴇ ᴜᴘᴅᴀᴛᴇ sᴇɴᴛ!</b>\n\n"
+        f"📽 <b>{base_name_used}</b>\n"
+        f"📂 ɴᴇᴡ ꜰɪʟᴇs ᴀᴅᴅᴇᴅ: <b>{added_count}</b>",
+        parse_mode=enums.ParseMode.HTML
+    )
 
 
 
