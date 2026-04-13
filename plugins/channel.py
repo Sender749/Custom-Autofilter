@@ -568,6 +568,7 @@ async def manual_movie_update(bot, message):
     # ── Parse optional trailing season hint  e.g. s01 / s1 / s02 ─────────────
     season_hint = None
     season_num  = None
+    year_hint   = None   # always initialise here to avoid UnboundLocalError
     sm = _SEASON_HINT_RE.search(raw_input)
     if sm:
         season_num  = int(sm.group(1))
@@ -580,7 +581,6 @@ async def manual_movie_update(bot, message):
             year_hint   = ym.group(1)
             title_query = raw_input[:ym.start()].strip()
         else:
-            year_hint   = None
             title_query = raw_input
 
     if not title_query:
@@ -618,40 +618,21 @@ async def manual_movie_update(bot, message):
             parse_mode=enums.ParseMode.HTML
         )
 
-    # ── Filter results to only the season requested (if season_hint given) ─────
-    # Also apply a loose title check so unrelated results don't sneak in
-    title_words = set(title_query.lower().split())
-
-    def _file_matches(file_doc):
-        fname   = (file_doc.get("file_name") or "").lower()
-        cap     = (file_doc.get("caption")   or "").lower()
-        combined = f"{fname} {cap}"
-        # Title words must all appear somewhere
-        if not all(w in combined for w in title_words):
-            return False
-        if season_num is not None:
-            # must have S<season_num> pattern
-            if not re.search(rf'\bs0*{season_num}\b', combined, re.IGNORECASE):
-                return False
-        elif 'year_hint' in dir() and year_hint:       # noqa: F821 — always defined above
-            if year_hint not in combined:
-                return False
-        return True
-
-    # rebuild year_hint reference safely
-    _year_hint = year_hint if season_hint is None else None
-
+    # ── Filter: apply season/year constraints only (DB search already matched title) ──
+    # NOTE: We do NOT re-check title words here.
+    # The DB stores raw file names like "The Boys S05E01 720p Hindi..." — the
+    # search already filtered by title. Re-checking individual words causes false
+    # negatives because save_file() strips punctuation/symbols from stored names.
     def _file_matches_safe(file_doc):
         fname    = (file_doc.get("file_name") or "").lower()
         cap      = (file_doc.get("caption")   or "").lower()
         combined = f"{fname} {cap}"
-        if not all(w in combined for w in title_words):
-            return False
         if season_num is not None:
+            # must contain S<N> pattern  (handles S1 / S01 / S02 etc.)
             if not re.search(rf'\bs0*{season_num}\b', combined, re.IGNORECASE):
                 return False
-        elif _year_hint:
-            if _year_hint not in combined:
+        elif year_hint:
+            if year_hint not in combined:
                 return False
         return True
 
@@ -686,11 +667,10 @@ async def manual_movie_update(bot, message):
         except Exception:
             continue
 
-        # Anchor to the first base_name we derive; skip outliers
+        # Anchor to the first base_name we derive; allow slight variations
+        # (different qualities of same movie resolve to the same base_name)
         if base_name_used is None:
             base_name_used = info["base_name"]
-        elif info["base_name"] != base_name_used:
-            continue
 
         if info["quality"] != "N/A":
             all_qualities.update(q.strip() for q in info["quality"].split(",") if q.strip())
@@ -705,13 +685,15 @@ async def manual_movie_update(bot, message):
 
     if not base_name_used:
         return await status_msg.edit_text(
-            f"<b>😕 ᴄᴏᴜʟᴅ ɴᴏᴛ ʀᴇsᴏʟᴠᴇ ᴛɪᴛʟᴇ ꜰʀᴏᴍ ꜰɪʟᴇs.</b>",
+            "<b>😕 ᴄᴏᴜʟᴅ ɴᴏᴛ ʀᴇsᴏʟᴠᴇ ᴛɪᴛʟᴇ ꜰʀᴏᴍ ꜰɪʟᴇs.</b>",
             parse_mode=enums.ParseMode.HTML
         )
 
-    # ── Fetch poster / details (same logic as auto handler) ───────────────────
+    # ── Fetch poster / details — always default to {} if API returns None ──────
+    # The TMDB/IMDB API can return None (e.g. HTTP 402 payment required).
+    # Calling .get() on None crashes with AttributeError, so guard here.
     if TMDB_POSTER:
-        details = await get_movie_detailsx(base_name_used)
+        details = await get_movie_detailsx(base_name_used) or {}
         if details.get("error"):
             _local_error_tmdb = True
             details = await get_movie_details(base_name_used) or {}
