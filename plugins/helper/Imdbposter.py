@@ -127,6 +127,7 @@ async def get_movie_details(query, id=False, file=None):
 
 async def get_movie_detailsx(query, id=False, file=None):
     api_key = TMDB_API_KEY
+    logger.info(f"TMDB KEY: {api_key}")
     search_url = "https://api.themoviedb.org/3/search/movie"
 
     try:
