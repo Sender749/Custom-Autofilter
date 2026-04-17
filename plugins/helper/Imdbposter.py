@@ -126,59 +126,43 @@ async def get_movie_details(query, id=False, file=None):
         return None
 
 async def get_movie_detailsx(query, id=False, file=None):
-    base_url = "https://bharath-boy-api.vercel.app/api/movie-posters"
-    q = str(query).strip()
+    api_key = TMDB_API_KEY
+    search_url = "https://api.themoviedb.org/3/search/movie"
+
     try:
         connector = aiohttp.TCPConnector(family=socket.AF_INET)
         async with aiohttp.ClientSession(connector=connector) as session:
-            params = {"query": q, "api_key": TMDB_API_KEY}
-            async with session.get(base_url, params=params) as resp:
+            params = {
+                "api_key": api_key,
+                "query": query
+            }
+            async with session.get(search_url, params=params) as resp:
                 if resp.status != 200:
                     text = await resp.text()
-                    logger.error(f"API request failed [{resp.status}] for query={q}\n {text}")
-                    return {"error": True, "status": resp.status, "message": text}
+                    logger.error(f"TMDB search failed [{resp.status}] {text}")
+                    return {"error": True}
+
                 data = await resp.json()
+
+        results = data.get("results")
+        if not results:
+            return {"error": True}
+
+        movie = results[0]
+
+        poster_path = movie.get("poster_path")
+        backdrop_path = movie.get("backdrop_path")
+
+        return {
+            "title": movie.get("title"),
+            "year": movie.get("release_date", "")[:4],
+            "rating": movie.get("vote_average"),
+            "plot": movie.get("overview"),
+            "poster_url": f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None,
+            "backdrop_url": f"https://image.tmdb.org/t/p/original{backdrop_path}" if backdrop_path else None,
+            "tmdb_url": f"https://www.themoviedb.org/movie/{movie.get('id')}"
+        }
+
     except Exception as e:
-        logger.error(f"An error occurred in get_movie_detailsx: {e}")
-        return {"error": True, "message": str(e)}
-    # Normalize fields
-    details = {}
-    details['title'] = data.get('title') or data.get('localized_title')
-    details['year'] = (data.get('year', 0)) if data.get('year') else None
-    details['release_date'] = data.get('release_date')
-    details['rating'] = round(float(data.get('rating', 0)), 1) if data.get('rating') is not None else None
-    details['votes'] = int(data.get('votes', 0))
-    details['runtime'] = data.get('runtime')
-    details['certificates'] = data.get('certificates')
-    details['tmdb_url'] = data.get('url')
-    for key in ('genres', 'languages', 'countries'):
-        raw = data.get(key)
-        details[key] = [s.strip() for s in raw.split(',')] if raw else []
-    for role in ('director', 'writer', 'producer', 'composer', 'cinematographer', 'cast'):
-        raw = data.get(role)
-        details[role] = [s.strip() for s in raw.split(',')] if raw else []
-    details['plot'] = data.get('plot')
-    details['tagline'] = data.get('tagline')
-    details['box_office'] = (data.get('box_office', 0)) if data.get('box_office') else None
-    raw_dist = data.get('distributors')
-    details['distributors'] = [d.strip() for d in raw_dist.split(',')] if raw_dist else []
-    details['imdb_id'] = data.get('imdb_id')
-    details['tmdb_id'] = data.get('tmdb_id')
-    posters = data.get('images', {}).get('posters', {})
-    original_language = data.get('images', {}).get('original_language')
-    poster_url = data.get('poster_url')
-    if not poster_url:
-        for key in ('en', original_language, 'no_lang'):
-            if key and posters.get(key):
-                poster_url = posters[key][0]
-                break
-    details['poster_url'] = poster_url
-    backdrops = data.get('images', {}).get('backdrops', {})
-    original_language = data.get('images', {}).get('original_language')
-    backdrop_url = None
-    for key in ('en', original_language, 'no_lang'):
-        if key and backdrops.get(key):
-            backdrop_url = backdrops[key][0]
-            break
-    details['backdrop_url'] = backdrop_url
-    return details
+        logger.error(f"TMDB error: {e}")
+        return {"error": True}
