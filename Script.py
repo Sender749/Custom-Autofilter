@@ -157,7 +157,8 @@ class script(object):
 
     FILE_CAPTION = """<b><a href="https://t.me/Navex_Movies">💎💎</a>{file_caption}</b>"""
 
-    MOVIE_UPDATE_NOTIFY_TXT = """<a href="{poster_url}">&#8203;</a>
+    MOVIE_UPDATE_NOTIFY_TXT = """<b>{tag} ➤ <a href="{imdb_url}">{filename}</a></b>
+
 <blockquote>🎭 ɢᴇɴʀᴇs  : <b>{genres}</b>
 📺 ᴏᴛᴛ       : <b>{ott}</b>
 🎞️ ǫᴜᴀʟɪᴛʏ : <b>{quality}</b>
