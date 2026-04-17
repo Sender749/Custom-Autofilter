@@ -104,7 +104,17 @@ async def media_handler(bot, message):
     success = await save_file(media)
     if not success:
         return
-    return
+
+    try:
+        if await db.movie_update_status(bot.me.id):
+            await process_and_send_update(
+                bot,
+                media.file_name,
+                media.caption,
+                source_chat=message.chat
+            )
+    except Exception:
+        logger.exception("Movie update failed for channel file")
 
 @Client.on_message(filters.chat(FETCH_MOVIE_UPDATE) & media_filter)
 async def movie_update_fetcher(bot, message):
@@ -276,7 +286,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
     if not movie_doc:
         if TMDB_POSTER:
             details = await get_movie_detailsx(base_name)
-            if details.get("error"):
+            if not details or details.get("error"):
                 error_tmdb=True
                 logger.info("TMDB error switching to IMDB")
                 details = await get_movie_details(base_name) or {}
@@ -522,11 +532,3 @@ def generate_movie_message(movie_doc, base_name):
         rating=movie_doc.get("rating", "N/A"),
         search_link=temp.B_LINK
     )
-
-
-
-
-
-
-
-
