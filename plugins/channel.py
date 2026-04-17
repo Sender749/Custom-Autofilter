@@ -357,8 +357,12 @@ async def send_movie_update(bot, base_name):
                 for link in sorted(channels)
             ]
             reply_markup = InlineKeyboardMarkup(buttons)
-            if movie_doc.get("poster_url") and not LINK_PREVIEW:
-                resized_poster = await fetch_image(movie_doc["poster_url"], size=(2560, 1440) if LANDSCAPE_POSTER and TMDB_POSTER and not error_tmdb else (853, 1280))
+            poster_url = movie_doc.get("poster_url")
+            resized_poster = None
+            if poster_url and not LINK_PREVIEW:
+                resized_poster = await fetch_image(poster_url, size=(2560, 1440) if LANDSCAPE_POSTER and TMDB_POSTER and not error_tmdb else (853, 1280))
+
+            if resized_poster:
                 msg = await bot.send_photo(
                     chat_id=MOVIE_UPDATE_CHANNEL,
                     photo=resized_poster,
@@ -374,7 +378,8 @@ async def send_movie_update(bot, base_name):
                     "reply_markup": reply_markup,
                     "parse_mode": enums.ParseMode.HTML
                 }
-                if movie_doc.get("poster_url") and LINK_PREVIEW:
+                if poster_url and LINK_PREVIEW:
+                    send_params["url"] = poster_url
                     send_params["invert_media"] = ABOVE_PREVIEW
                 msg = await bot.send_message(**send_params)
                 is_photo = False
