@@ -94,6 +94,7 @@ ABOVE_PREVIEW = bool(environ.get('ABOVE_PREVIEW', True)) # Shows link preview ab
 TMDB_API_KEY = environ.get('TMDB_API_KEY', 'e166a67b9b21ee3bd84bc189d567057b') # preffer to use your own tmdb API Key get it from https://www.themoviedb.org/settings/api
 TMDB_POSTER = bool(environ.get('TMDB_POSTER', True)) # Shows TMDB poster in notification msg
 LANDSCAPE_POSTER = bool(environ.get('LANDSCAPE_POSTER', True)) # Shows landscape poster in notification msg
+OMDB_API_KEY = environ.get('OMDB_API_KEY', '436aac9c')
 
 # Bot Settings
 
