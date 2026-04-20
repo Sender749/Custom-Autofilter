@@ -163,7 +163,7 @@ class script(object):
 📺 ᴏᴛᴛ       : <b>{ott}</b>
 🎞️ ǫᴜᴀʟɪᴛʏ : <b>{quality}</b>
 🎧 ᴀᴜᴅɪᴏ    : <b>{language}</b>
-🔥 ʀᴀᴛɪɴɢ   : <b>{rating}</b>
+🔥 ʀᴀᴛɪɴɢ   : <b>{rating} ⭐</b>
 {episodes}</blockquote>"""
 
     RESTART_TXT = """<b>
