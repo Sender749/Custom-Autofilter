@@ -285,9 +285,8 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
     }
 
     if not movie_doc:
-        # Local flag — no global state, safe in concurrent async context
+        details: dict = {}
         used_tmdb = False
-        details = {}
 
         if TMDB_POSTER:
             tmdb_result = await get_movie_detailsx(base_name, year=media_info.get("year"))
@@ -295,36 +294,35 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
                 details = tmdb_result
                 used_tmdb = True
             else:
-                logger.info("TMDB lookup failed, falling back to IMDb for '%s'", base_name)
+                logger.info("TMDB failed, trying OMDb for '%s'", base_name)
                 details = await get_movie_details(base_name, file=filename) or {}
         else:
             details = await get_movie_details(base_name, file=filename) or {}
 
-        # Genre normalisation — TMDB returns already-resolved strings; IMDB also returns strings
+        if not details:
+            logger.warning("All metadata sources failed for '%s' — sending without info", base_name)
+
+        # Genre normalisation
+        # Both TMDB and OMDb return comma-separated genre strings already.
+        # We accept them as-is (no STANDARD_GENRES filtering) because OMDb
+        # uses the exact same genre names as IMDb.
         raw_genres = details.get("genres", "") or ""
-        if isinstance(raw_genres, str) and raw_genres:
-            genre_list = [g.strip() for g in raw_genres.split(",")]
-            # Accept any genre from TMDB as-is; for IMDb filter to standard set
-            if used_tmdb:
-                genres = ", ".join(g for g in genre_list if g) or "N/A"
-            else:
-                genres = ", ".join(g for g in genre_list if g in STANDARD_GENRES) or "N/A"
-        elif isinstance(raw_genres, list):
+        if isinstance(raw_genres, list):
             genres = ", ".join(str(g) for g in raw_genres if g) or "N/A"
+        elif isinstance(raw_genres, str) and raw_genres and raw_genres != "N/A":
+            genres = ", ".join(g.strip() for g in raw_genres.split(",") if g.strip()) or "N/A"
         else:
             genres = "N/A"
 
-        # Poster selection
-        if used_tmdb and LANDSCAPE_POSTER:
-            poster_url = details.get("backdrop_url") or details.get("poster_url")
+        # Poster: prefer landscape backdrop (TMDB only) when enabled
+        if used_tmdb and LANDSCAPE_POSTER and details.get("backdrop_url"):
+            poster_url = details["backdrop_url"]
         else:
             poster_url = details.get("poster_url")
 
-        # URL for "more info" link
-        if used_tmdb:
-            info_url = details.get("tmdb_url", "")
-        else:
-            info_url = details.get("url", "")
+        # Info URL: both sources now expose a unified "url" key pointing to
+        # the best available page (IMDb if known, else TMDB page)
+        info_url = details.get("url") or details.get("tmdb_url") or ""
 
         movie_doc = {
             "_id": base_name,
