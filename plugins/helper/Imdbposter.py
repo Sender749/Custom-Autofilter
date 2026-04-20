@@ -138,8 +138,7 @@ async def get_movie_detailsx(query, id=False, file=None):
                 "query": query
             }
             async with session.get(search_url, params=params) as resp:
-                text = await resp.text()
-                logger.error(f"TMDB ERROR [{resp.status}] → {text}")
+                if resp.status != 200:
                     text = await resp.text()
                     logger.error(f"TMDB search failed [{resp.status}] {text}")
                     return {"error": True}
