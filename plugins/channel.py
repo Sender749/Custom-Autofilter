@@ -265,12 +265,12 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
     if not hasattr(db, 'movie_updates'):
         db.movie_updates = db.db.movie_updates
     movie_doc = await db.movie_updates.find_one({"_id": base_name})
-    global error_tmdb
-    error_tmdb=False
+
     if source_chat.username:
         channel_link = f"https://t.me/{source_chat.username}"
     else:
         channel_link = f"https://t.me/c/{str(source_chat.id)[4:]}"
+
     file_data = {
         "filename": filename,
         "processed": processed,
@@ -283,29 +283,56 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
         "episode": media_info["episode"],
         "source_channel": channel_link
     }
-    if not movie_doc:
-        if TMDB_POSTER:
-            details = await get_movie_detailsx(base_name)
-            if not details or details.get("error"):
-                error_tmdb=True
-                logger.info("TMDB error switching to IMDB")
-                details = await get_movie_details(base_name) or {}
-        else:
-            details = await get_movie_details(base_name) or {}
 
-        raw_genres = details.get("genres", "N/A")
-        if isinstance(raw_genres, str):
-            genre_list = [g.strip() for g in raw_genres.split(",")]
-            genres = ", ".join(g for g in genre_list if g in STANDARD_GENRES) or "N/A"
+    if not movie_doc:
+        # Local flag — no global state, safe in concurrent async context
+        used_tmdb = False
+        details = {}
+
+        if TMDB_POSTER:
+            tmdb_result = await get_movie_detailsx(base_name, year=media_info.get("year"))
+            if tmdb_result and not tmdb_result.get("error"):
+                details = tmdb_result
+                used_tmdb = True
+            else:
+                logger.info("TMDB lookup failed, falling back to IMDb for '%s'", base_name)
+                details = await get_movie_details(base_name, file=filename) or {}
         else:
-            genres = ", ".join(g for g in raw_genres if g in STANDARD_GENRES) or "N/A"
+            details = await get_movie_details(base_name, file=filename) or {}
+
+        # Genre normalisation — TMDB returns already-resolved strings; IMDB also returns strings
+        raw_genres = details.get("genres", "") or ""
+        if isinstance(raw_genres, str) and raw_genres:
+            genre_list = [g.strip() for g in raw_genres.split(",")]
+            # Accept any genre from TMDB as-is; for IMDb filter to standard set
+            if used_tmdb:
+                genres = ", ".join(g for g in genre_list if g) or "N/A"
+            else:
+                genres = ", ".join(g for g in genre_list if g in STANDARD_GENRES) or "N/A"
+        elif isinstance(raw_genres, list):
+            genres = ", ".join(str(g) for g in raw_genres if g) or "N/A"
+        else:
+            genres = "N/A"
+
+        # Poster selection
+        if used_tmdb and LANDSCAPE_POSTER:
+            poster_url = details.get("backdrop_url") or details.get("poster_url")
+        else:
+            poster_url = details.get("poster_url")
+
+        # URL for "more info" link
+        if used_tmdb:
+            info_url = details.get("tmdb_url", "")
+        else:
+            info_url = details.get("url", "")
+
         movie_doc = {
             "_id": base_name,
             "files": [file_data],
-            "poster_url": details.get("backdrop_url") if LANDSCAPE_POSTER and TMDB_POSTER and not error_tmdb else details.get("poster_url"),
+            "poster_url": poster_url,
             "genres": genres,
             "rating": details.get("rating", "N/A"),
-            "imdb_url": details.get("url", "")if not TMDB_POSTER else details.get("tmdb_url"),
+            "imdb_url": info_url,
             "year": media_info["year"] or details.get("year"),
             "tag": media_info["tag"],
             "ott_platform": media_info["ott_platform"],
@@ -360,7 +387,9 @@ async def send_movie_update(bot, base_name):
             poster_url = movie_doc.get("poster_url")
             resized_poster = None
             if poster_url and not LINK_PREVIEW:
-                resized_poster = await fetch_image(poster_url, size=(2560, 1440) if LANDSCAPE_POSTER and TMDB_POSTER and not error_tmdb else (853, 1280))
+                is_landscape = LANDSCAPE_POSTER and TMDB_POSTER and poster_url and "original" in poster_url
+                size = (2560, 1440) if is_landscape else (853, 1280)
+                resized_poster = await fetch_image(poster_url, size=size)
 
             if resized_poster:
                 msg = await bot.send_photo(
@@ -524,6 +553,13 @@ def generate_movie_message(movie_doc, base_name):
     language_str = ", ".join(sorted(all_languages)) if all_languages else "N/A"
     ott_str = ", ".join(sorted(all_ott_platforms)) if all_ott_platforms else "N/A"
 
+    rating_raw = movie_doc.get("rating", "N/A")
+    # Ensure rating is a clean string (could be float from TMDB)
+    try:
+        rating_display = f"{float(rating_raw):.1f}" if rating_raw and rating_raw != "N/A" else "N/A"
+    except (ValueError, TypeError):
+        rating_display = str(rating_raw) if rating_raw else "N/A"
+
     return script.MOVIE_UPDATE_NOTIFY_TXT.format(
         poster_url=movie_doc.get("poster_url", ""),
         imdb_url=movie_doc.get("imdb_url", ""),
@@ -534,6 +570,5 @@ def generate_movie_message(movie_doc, base_name):
         quality=quality_str,
         language=language_str,
         episodes=epi_block,
-        rating=movie_doc.get("rating", "N/A"),
-        search_link=temp.B_LINK
+        rating=rating_display,
     )
