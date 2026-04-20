@@ -1,59 +1,59 @@
+"""
+Imdbposter.py  —  Movie/series metadata fetcher
+================================================
+Fetch order (each step is tried only if the previous failed):
+  1. TMDB  — best poster quality, genre IDs resolved, TV-series aware
+  2. OMDb  — official IMDb data via REST API (no scraping, never 403s)
+  3. None  — graceful fallback: bot sends the update without metadata
+
+Why Cinemagoer was removed
+--------------------------
+Cinemagoer (formerly IMDbPY) screen-scrapes imdb.com.  IMDb now returns
+HTTP 403 Forbidden to all non-browser user-agents, so every call raises
+IMDbDataAccessError.  The library is effectively broken for this use-case
+and cannot be fixed without IMDb's cooperation.  OMDb hits the same
+underlying IMDb dataset through the official API instead.
+"""
+
+from __future__ import annotations
+
 import re
 import asyncio
-import aiohttp
+import logging
 import socket
 import warnings
-import logging
 from io import BytesIO
+
+import aiohttp
 from PIL import Image
-from info import IMAGE_FETCH, TMDB_API_KEY
+
+from info import IMAGE_FETCH, TMDB_API_KEY, OMDB_API_KEY
 
 logger = logging.getLogger(__name__)
 
-LONG_IMDB_DESCRIPTION = False
 Image.MAX_IMAGE_PIXELS = None
 warnings.simplefilter("ignore", Image.DecompressionBombWarning)
 
-# TMDB genre ID → name map (fetched once and cached)
-_tmdb_genre_cache: dict = {}
+# ---------------------------------------------------------------------------
+# Internal TMDB genre cache (populated once per process lifetime)
+# ---------------------------------------------------------------------------
+_tmdb_genre_cache: dict[int, str] = {}
+_genre_cache_lock = asyncio.Lock()
 
 
-def list_to_str(lst):
+def list_to_str(lst) -> str:
     if lst:
         return ", ".join(map(str, lst))
     return ""
 
 
-async def _ensure_tmdb_genres(session: aiohttp.ClientSession, api_key: str):
-    """Populate _tmdb_genre_cache with both movie and TV genre maps."""
-    global _tmdb_genre_cache
-    if _tmdb_genre_cache:
-        return
-    combined = {}
-    for media_type in ("movie", "tv"):
-        try:
-            url = f"https://api.themoviedb.org/3/genre/{media_type}/list"
-            async with session.get(url, params={"api_key": api_key}, timeout=aiohttp.ClientTimeout(total=10)) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    for g in data.get("genres", []):
-                        combined[g["id"]] = g["name"]
-        except Exception as e:
-            logger.warning(f"Could not fetch TMDB {media_type} genres: {e}")
-    _tmdb_genre_cache = combined
+# ---------------------------------------------------------------------------
+# Image helper
+# ---------------------------------------------------------------------------
 
-
-def _resolve_genres(genre_ids: list) -> str:
-    """Convert a list of TMDB genre IDs to a comma-separated genre string."""
-    if not _tmdb_genre_cache or not genre_ids:
-        return "N/A"
-    names = [_tmdb_genre_cache[gid] for gid in genre_ids if gid in _tmdb_genre_cache]
-    return ", ".join(names) if names else "N/A"
-
-
-async def fetch_image(url: str, size=(860, 1200)):
+async def fetch_image(url: str, size: tuple[int, int] = (860, 1200)) -> BytesIO | None:
+    """Download an image, resize it, and return a JPEG BytesIO object."""
     if not IMAGE_FETCH:
-        logger.info("Image fetching is disabled.")
         return None
     if not url:
         return None
@@ -61,279 +61,305 @@ async def fetch_image(url: str, size=(860, 1200)):
         connector = aiohttp.TCPConnector(family=socket.AF_INET)
         timeout = aiohttp.ClientTimeout(total=30)
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-            async with session.get(url) as response:
-                if response.status != 200:
-                    logger.error(f"Failed to fetch image: HTTP {response.status} for {url}")
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    logger.error("fetch_image: HTTP %s for %s", resp.status, url)
                     return None
-                data = await response.read()
-                img = Image.open(BytesIO(data))
-                img = img.convert("RGB")
-                img = img.resize(size, Image.LANCZOS)
-                out = BytesIO()
-                img.save(out, format="JPEG", quality=90)
-                out.seek(0)
-                return out
-    except aiohttp.ClientError as e:
-        logger.error(f"HTTP request error in fetch_image: {e}")
-    except IOError as e:
-        logger.error(f"I/O error in fetch_image: {e}")
-    except Exception as e:
-        logger.error(f"Unexpected error in fetch_image: {e}")
-    return None
-
-
-async def get_movie_detailsx(query: str, year: str = None) -> dict:
-    """
-    Fetch movie/series details from TMDB.
-    Tries movie search first; if no results, falls back to TV series search.
-    Returns a dict with keys: title, year, rating, plot, genres, poster_url,
-    backdrop_url, tmdb_url, kind.  On failure returns {"error": True}.
-    """
-    api_key = TMDB_API_KEY
-    logger.info(f"TMDB search: '{query}' year={year}")
-
-    # Clean year from query string if it appears at the end
-    clean_query = re.sub(r'\s*\(?\b(?:19|20)\d{2}\b\)?$', '', query).strip()
-
-    connector = aiohttp.TCPConnector(family=socket.AF_INET)
-    timeout = aiohttp.ClientTimeout(total=15)
-
-    try:
-        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-            # Populate genre cache once
-            await _ensure_tmdb_genres(session, api_key)
-
-            result = None
-            kind = "movie"
-
-            # --- 1. Try movie search ---
-            params = {"api_key": api_key, "query": clean_query, "include_adult": "false"}
-            if year:
-                params["year"] = year
-            async with session.get(
-                "https://api.themoviedb.org/3/search/movie", params=params
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    results = data.get("results") or []
-                    if results:
-                        # Prefer exact or close title match
-                        result = _pick_best_result(results, clean_query, year)
-                        kind = "movie"
-
-            # --- 2. Fall back to TV search ---
-            if not result:
-                tv_params = {"api_key": api_key, "query": clean_query, "include_adult": "false"}
-                if year:
-                    tv_params["first_air_date_year"] = year
-                async with session.get(
-                    "https://api.themoviedb.org/3/search/tv", params=tv_params
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        results = data.get("results") or []
-                        if results:
-                            result = _pick_best_result(results, clean_query, year, is_tv=True)
-                            kind = "tv"
-
-            if not result:
-                logger.warning(f"TMDB: No results for '{clean_query}'")
-                return {"error": True}
-
-            # --- 3. Fetch full details for genres, runtime, etc. ---
-            media_id = result.get("id")
-            endpoint = "tv" if kind == "tv" else "movie"
-            async with session.get(
-                f"https://api.themoviedb.org/3/{endpoint}/{media_id}",
-                params={"api_key": api_key, "append_to_response": "external_ids"}
-            ) as detail_resp:
-                if detail_resp.status == 200:
-                    detail = await detail_resp.json()
-                else:
-                    detail = result  # use search result as fallback
-
-            poster_path = detail.get("poster_path")
-            backdrop_path = detail.get("backdrop_path")
-
-            # Genre resolution from detail
-            raw_genre_list = detail.get("genres", [])
-            if raw_genre_list and isinstance(raw_genre_list[0], dict):
-                # Full detail endpoint returns {"id": int, "name": str}
-                genres = ", ".join(g["name"] for g in raw_genre_list if isinstance(g, dict) and g.get("name"))
-            else:
-                # Search results return genre_ids list
-                genres = _resolve_genres(result.get("genre_ids", []))
-
-            # Title / year handling
-            if kind == "tv":
-                title = detail.get("name") or detail.get("original_name", "")
-                air_date = detail.get("first_air_date", "")
-                result_year = air_date[:4] if air_date else ""
-                tmdb_url = f"https://www.themoviedb.org/tv/{media_id}"
-                # Also get external IMDB id if available
-                ext = detail.get("external_ids", {})
-                imdb_id = ext.get("imdb_id", "")
-            else:
-                title = detail.get("title") or detail.get("original_title", "")
-                release_date = detail.get("release_date", "")
-                result_year = release_date[:4] if release_date else ""
-                tmdb_url = f"https://www.themoviedb.org/movie/{media_id}"
-                imdb_id = detail.get("imdb_id", "")
-
-            rating = detail.get("vote_average")
-            formatted_rating = f"{rating:.1f}" if rating else "N/A"
-
-            overview = detail.get("overview", "")
-            if overview and len(overview) > 800:
-                overview = overview[:800] + "..."
-
-            return {
-                "title": title,
-                "year": result_year or year or "",
-                "rating": formatted_rating,
-                "plot": overview,
-                "genres": genres,
-                "poster_url": f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None,
-                "backdrop_url": f"https://image.tmdb.org/t/p/original{backdrop_path}" if backdrop_path else None,
-                "tmdb_url": tmdb_url,
-                "imdb_id": imdb_id,
-                "kind": kind,
-            }
-
-    except asyncio.TimeoutError:
-        logger.error(f"TMDB request timed out for '{query}'")
-        return {"error": True}
-    except Exception as e:
-        logger.error(f"TMDB error for '{query}': {e}")
-        return {"error": True}
-
-
-def _pick_best_result(results: list, query: str, year: str = None, is_tv: bool = False) -> dict:
-    """Pick the most relevant result from TMDB search results."""
-    query_lower = query.lower()
-    title_key = "name" if is_tv else "title"
-    orig_key = "original_name" if is_tv else "original_title"
-    date_key = "first_air_date" if is_tv else "release_date"
-
-    # If year given, prefer year-matching results
-    if year:
-        year_matches = [r for r in results if str(r.get(date_key, ""))[:4] == str(year)]
-        if year_matches:
-            results = year_matches
-
-    # Prefer exact title match
-    for r in results:
-        t = (r.get(title_key) or r.get(orig_key) or "").lower()
-        if t == query_lower:
-            return r
-
-    # Prefer results with popularity > 1 and a poster
-    with_poster = [r for r in results if r.get("poster_path") and r.get("vote_count", 0) > 10]
-    if with_poster:
-        return with_poster[0]
-
-    return results[0]
-
-
-async def get_movie_details(query: str, id: bool = False, file: str = None) -> dict:
-    """
-    Fetch movie/series details from IMDb via Cinemagoer.
-    Runs the blocking Cinemagoer calls in a thread pool to avoid blocking the event loop.
-    """
-    try:
-        loop = asyncio.get_event_loop()
-        details = await loop.run_in_executor(None, _imdb_fetch_sync, query, id, file)
-        return details
-    except Exception as e:
-        logger.error(f"IMDb fetch error for '{query}': {e}")
+                data = await resp.read()
+        img = Image.open(BytesIO(data)).convert("RGB")
+        img = img.resize(size, Image.LANCZOS)
+        out = BytesIO()
+        img.save(out, format="JPEG", quality=90)
+        out.seek(0)
+        return out
+    except Exception as exc:
+        logger.error("fetch_image error: %s", exc)
         return None
 
 
-def _imdb_fetch_sync(query: str, by_id: bool = False, file: str = None) -> dict:
-    """Synchronous IMDb fetch (runs in thread pool via run_in_executor)."""
+# ---------------------------------------------------------------------------
+# TMDB helpers
+# ---------------------------------------------------------------------------
+
+async def _ensure_tmdb_genres(session: aiohttp.ClientSession) -> None:
+    """Fetch movie + TV genre maps from TMDB once and cache them."""
+    global _tmdb_genre_cache
+    async with _genre_cache_lock:
+        if _tmdb_genre_cache:
+            return
+        combined: dict[int, str] = {}
+        for media_type in ("movie", "tv"):
+            try:
+                url = f"https://api.themoviedb.org/3/genre/{media_type}/list"
+                async with session.get(
+                    url,
+                    params={"api_key": TMDB_API_KEY},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as r:
+                    if r.status == 200:
+                        for g in (await r.json()).get("genres", []):
+                            combined[g["id"]] = g["name"]
+            except Exception as exc:
+                logger.warning("TMDB genre fetch (%s) failed: %s", media_type, exc)
+        _tmdb_genre_cache = combined
+
+
+def _resolve_genre_ids(genre_ids: list[int]) -> str:
+    if not _tmdb_genre_cache or not genre_ids:
+        return ""
+    names = [_tmdb_genre_cache[gid] for gid in genre_ids if gid in _tmdb_genre_cache]
+    return ", ".join(names)
+
+
+def _pick_best(results: list[dict], query: str, year: str | None, is_tv: bool) -> dict | None:
+    """Return the most relevant item from a TMDB results list."""
+    if not results:
+        return None
+    title_key = "name" if is_tv else "title"
+    orig_key  = "original_name" if is_tv else "original_title"
+    date_key  = "first_air_date" if is_tv else "release_date"
+    ql = query.lower()
+
+    # 1. Year filter
+    if year:
+        yr_match = [r for r in results if str(r.get(date_key, ""))[:4] == str(year)]
+        if yr_match:
+            results = yr_match
+
+    # 2. Exact title match
+    for r in results:
+        if (r.get(title_key) or r.get(orig_key) or "").lower() == ql:
+            return r
+
+    # 3. Has poster + some votes
+    popular = [r for r in results if r.get("poster_path") and r.get("vote_count", 0) > 5]
+    return (popular or results)[0]
+
+
+async def get_movie_detailsx(query: str, year: str | None = None) -> dict:
+    """
+    Primary metadata source: TMDB.
+    Tries /search/movie first, then /search/tv.
+    Returns a normalised dict or {"error": True}.
+    """
+    if not TMDB_API_KEY:
+        return {"error": True}
+
+    clean = re.sub(r"\s*\(?\b(?:19|20)\d{2}\b\)?$", "", query).strip()
+    logger.info("TMDB search: '%s' year=%s", clean, year)
+
+    connector = aiohttp.TCPConnector(family=socket.AF_INET)
+    timeout   = aiohttp.ClientTimeout(total=15)
     try:
-        from imdb import Cinemagoer
-        ia = Cinemagoer()
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            await _ensure_tmdb_genres(session)
 
-        if not by_id:
-            query = query.strip().lower()
-            title = query
-            year = re.findall(r'[1-2]\d{3}$', query, re.IGNORECASE)
+            result: dict | None = None
+            kind = "movie"
+
+            # --- movie ---
+            params: dict = {"api_key": TMDB_API_KEY, "query": clean, "include_adult": "false"}
             if year:
-                year = list_to_str(year[:1])
-                title = query.replace(year, "").strip()
-            elif file is not None:
-                year_match = re.findall(r'[1-2]\d{3}', file, re.IGNORECASE)
-                year = list_to_str(year_match[:1]) if year_match else None
+                params["year"] = year
+            async with session.get("https://api.themoviedb.org/3/search/movie", params=params) as r:
+                if r.status == 200:
+                    result = _pick_best((await r.json()).get("results") or [], clean, year, False)
+
+            # --- tv fallback ---
+            if not result:
+                tv_params: dict = {"api_key": TMDB_API_KEY, "query": clean, "include_adult": "false"}
+                if year:
+                    tv_params["first_air_date_year"] = year
+                async with session.get("https://api.themoviedb.org/3/search/tv", params=tv_params) as r:
+                    if r.status == 200:
+                        result = _pick_best((await r.json()).get("results") or [], clean, year, True)
+                        if result:
+                            kind = "tv"
+
+            if not result:
+                logger.warning("TMDB: no results for '%s'", clean)
+                return {"error": True}
+
+            # --- detail fetch (resolves genres & external IDs) ---
+            mid      = result["id"]
+            endpoint = "tv" if kind == "tv" else "movie"
+            async with session.get(
+                f"https://api.themoviedb.org/3/{endpoint}/{mid}",
+                params={"api_key": TMDB_API_KEY, "append_to_response": "external_ids"},
+            ) as r:
+                detail: dict = (await r.json()) if r.status == 200 else result
+
+            # genres
+            raw_genres = detail.get("genres", [])
+            if raw_genres and isinstance(raw_genres[0], dict):
+                genres = ", ".join(g["name"] for g in raw_genres if g.get("name"))
             else:
-                year = None
+                genres = _resolve_genre_ids(result.get("genre_ids", []))
 
-            search_results = ia.search_movie(title.lower(), results=10)
-            if not search_results:
-                return None
+            poster_path   = detail.get("poster_path")
+            backdrop_path = detail.get("backdrop_path")
 
-            if year:
-                filtered = [k for k in search_results if str(k.get('year')) == str(year)]
-                if not filtered:
-                    filtered = search_results
+            if kind == "tv":
+                title       = detail.get("name") or detail.get("original_name", "")
+                release_raw = detail.get("first_air_date", "")
+                imdb_id     = detail.get("external_ids", {}).get("imdb_id", "")
+                info_url    = f"https://www.themoviedb.org/tv/{mid}"
             else:
-                filtered = search_results
+                title       = detail.get("title") or detail.get("original_title", "")
+                release_raw = detail.get("release_date", "")
+                imdb_id     = detail.get("imdb_id", "")
+                info_url    = f"https://www.themoviedb.org/movie/{mid}"
 
-            typed = [k for k in filtered if k.get('kind') in ['movie', 'tv series']]
-            movieid = (typed or filtered)[0].movieID
-        else:
-            movieid = query
+            result_year = release_raw[:4] if release_raw else (year or "")
+            rating_raw  = detail.get("vote_average")
+            rating      = f"{float(rating_raw):.1f}" if rating_raw else "N/A"
+            overview    = (detail.get("overview") or "")[:800]
 
-        movie = ia.get_movie(movieid)
-        ia.update(movie, info=['main', 'vote details'])
+            return {
+                "title":        title,
+                "year":         result_year,
+                "rating":       rating,
+                "plot":         overview,
+                "genres":       genres or "N/A",
+                "poster_url":   f"https://image.tmdb.org/t/p/w500{poster_path}"    if poster_path   else None,
+                "backdrop_url": f"https://image.tmdb.org/t/p/original{backdrop_path}" if backdrop_path else None,
+                "tmdb_url":     info_url,
+                "imdb_id":      imdb_id,
+                "kind":         kind,
+                # keep a unified "url" key pointing to the best info page
+                "url":          f"https://www.imdb.com/title/{imdb_id}" if imdb_id else info_url,
+            }
 
-        if movie.get("original air date"):
-            date = movie["original air date"]
-        elif movie.get("year"):
-            date = movie.get("year")
-        else:
-            date = "N/A"
+    except asyncio.TimeoutError:
+        logger.error("TMDB timeout for '%s'", query)
+        return {"error": True}
+    except Exception as exc:
+        logger.error("TMDB error for '%s': %s", query, exc)
+        return {"error": True}
 
-        plot = movie.get('plot')
-        if plot and len(plot) > 0:
-            plot = plot[0]
-        else:
-            plot = movie.get('plot outline')
+
+# ---------------------------------------------------------------------------
+# OMDb  (official IMDb data, never scrapes, never 403s)
+# ---------------------------------------------------------------------------
+
+async def get_movie_details(query: str, id: bool = False, file: str | None = None) -> dict | None:
+    """
+    Secondary metadata source: OMDb API (http://www.omdbapi.com/).
+
+    Replaces the old Cinemagoer/IMDbPY implementation which broke permanently
+    because imdb.com returns HTTP 403 to all non-browser scrapers.
+
+    OMDb is the official IMDb data delivered through a REST API.
+    Free tier: 1,000 requests/day — plenty for a notification bot.
+    """
+    if not OMDB_API_KEY:
+        logger.warning("OMDB_API_KEY not set — skipping OMDb lookup")
+        return None
+
+    connector = aiohttp.TCPConnector(family=socket.AF_INET)
+    timeout   = aiohttp.ClientTimeout(total=15)
+
+    try:
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            if id:
+                # query is a bare IMDb numeric ID or "tt..." string
+                imdb_id = f"tt{query}" if not str(query).startswith("tt") else str(query)
+                params  = {"apikey": OMDB_API_KEY, "i": imdb_id, "plot": "full"}
+            else:
+                # Extract year from query / filename
+                year_match = re.findall(r"\b(?:19|20)\d{2}\b", query)
+                if not year_match and file:
+                    year_match = re.findall(r"\b(?:19|20)\d{2}\b", file)
+                year  = year_match[0] if year_match else None
+                clean = re.sub(r"\s*\(?\b(?:19|20)\d{2}\b\)?", "", query).strip()
+
+                # First: title search  (?s=…) to find closest match
+                s_params = {"apikey": OMDB_API_KEY, "s": clean, "plot": "short"}
+                if year:
+                    s_params["y"] = year
+                best_imdb_id = None
+                async with session.get("http://www.omdbapi.com/", params=s_params) as r:
+                    if r.status == 200:
+                        sdata = await r.json(content_type=None)
+                        if sdata.get("Response") == "True":
+                            hits = sdata.get("Search", [])
+                            # prefer exact title match
+                            hits_lower = [(h, (h.get("Title") or "").lower()) for h in hits]
+                            exact = [h for h, t in hits_lower if t == clean.lower()]
+                            best  = (exact or hits)
+                            if best:
+                                best_imdb_id = best[0].get("imdbID")
+
+                if best_imdb_id:
+                    params = {"apikey": OMDB_API_KEY, "i": best_imdb_id, "plot": "full"}
+                else:
+                    # Fall back to direct title lookup
+                    params = {"apikey": OMDB_API_KEY, "t": clean, "plot": "full"}
+                    if year:
+                        params["y"] = year
+
+            async with session.get("http://www.omdbapi.com/", params=params) as r:
+                if r.status != 200:
+                    logger.error("OMDb HTTP %s", r.status)
+                    return None
+                data = await r.json(content_type=None)
+
+        if data.get("Response") != "True":
+            logger.warning("OMDb: '%s' — %s", query, data.get("Error", "no result"))
+            return None
+
+        # OMDb returns "N/A" strings for missing fields — normalise to None
+        def omdb(key: str) -> str | None:
+            v = data.get(key)
+            return v if v and v != "N/A" else None
+
+        title    = omdb("Title")
+        year_out = omdb("Year")
+        genres   = omdb("Genre")
+        rating   = omdb("imdbRating")
+        poster   = omdb("Poster")    # direct JPEG URL, no auth needed
+        plot     = omdb("Plot")
+        imdb_id  = omdb("imdbID")
+        kind_raw = omdb("Type")      # "movie" | "series" | "episode"
+        lang     = omdb("Language")
+        country  = omdb("Country")
+        runtime  = omdb("Runtime")
+        director = omdb("Director")
+        cast     = omdb("Actors")
+        seasons  = omdb("totalSeasons")
+
+        kind = "tv" if kind_raw == "series" else "movie"
+        info_url = f"https://www.imdb.com/title/{imdb_id}" if imdb_id else ""
+
         if plot and len(plot) > 800:
             plot = plot[:800] + "..."
 
-        poster_url = movie.get('full-size cover url')
-        imdb_id = f"tt{movie.get('imdbID')}"
-
         return {
-            'title': movie.get('title'),
-            'votes': movie.get('votes'),
-            "aka": list_to_str(movie.get("akas")),
-            "seasons": movie.get("number of seasons"),
-            "box_office": movie.get('box office'),
-            'localized_title': movie.get('localized title'),
-            'kind': movie.get("kind"),
-            "imdb_id": imdb_id,
-            "cast": list_to_str(movie.get("cast")),
-            "runtime": list_to_str(movie.get("runtimes")),
-            "countries": list_to_str(movie.get("countries")),
-            "certificates": list_to_str(movie.get("certificates")),
-            "languages": list_to_str(movie.get("languages")),
-            "director": list_to_str(movie.get("director")),
-            "writer": list_to_str(movie.get("writer")),
-            "producer": list_to_str(movie.get("producer")),
-            "composer": list_to_str(movie.get("composer")),
-            "cinematographer": list_to_str(movie.get("cinematographer")),
-            "music_team": list_to_str(movie.get("music department")),
-            "distributors": list_to_str(movie.get("distributors")),
-            'release_date': date,
-            'year': movie.get('year'),
-            'genres': list_to_str(movie.get("genres")),
-            'poster_url': poster_url,
-            'plot': plot,
-            'rating': str(movie.get("rating", "N/A")),
-            'url': f'https://www.imdb.com/title/tt{movieid}'
+            "title":         title,
+            "year":          year_out,
+            "rating":        rating or "N/A",
+            "plot":          plot,
+            "genres":        genres or "N/A",
+            "poster_url":    poster,
+            "backdrop_url":  None,           # OMDb doesn't provide backdrops
+            "url":           info_url,
+            "imdb_url":      info_url,
+            "tmdb_url":      "",
+            "imdb_id":       imdb_id,
+            "kind":          kind,
+            # extra fields for potential future use
+            "languages":     lang,
+            "countries":     country,
+            "runtime":       runtime,
+            "director":      director,
+            "cast":          cast,
+            "seasons":       seasons,
+            "votes":         omdb("imdbVotes"),
         }
-    except Exception as e:
-        logger.error(f"IMDb sync fetch error: {e}")
+
+    except asyncio.TimeoutError:
+        logger.error("OMDb timeout for '%s'", query)
+        return None
+    except Exception as exc:
+        logger.error("OMDb error for '%s': %s", query, exc)
         return None
