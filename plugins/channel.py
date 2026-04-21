@@ -894,7 +894,7 @@ async def manual_movie_update(bot, message):
         # ── 5. Build caption ──────────────────────────────────────────────────
         text = script.MANUAL_UPDATE_NOTIFY_TXT.format(
             tag        = primary_tag,
-            filename   = base_name,
+            filename   = display_title,
             genres     = genres,
             quality    = quality_str,
             resolution = resolution_str,
@@ -915,7 +915,7 @@ async def manual_movie_update(bot, message):
         reply_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton(
                 "🔍 ɢᴇᴛ ꜰɪʟᴇs",
-                url=f"https://t.me/{temp.U_NAME}?start=getfile-{base_name.replace(' ', '-')}"
+                url=f"https://t.me/{temp.U_NAME}?start=getfile-{search_query}"
             )],
             [InlineKeyboardButton(
                 "♨️ Viral Stuff ♨️",
