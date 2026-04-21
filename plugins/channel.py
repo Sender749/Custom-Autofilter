@@ -894,7 +894,7 @@ async def manual_movie_update(bot, message):
         # ── 5. Build caption ──────────────────────────────────────────────────
         text = script.MANUAL_UPDATE_NOTIFY_TXT.format(
             tag        = primary_tag,
-            filename   = display_title,
+            filename   = base_name,
             genres     = genres,
             quality    = quality_str,
             resolution = resolution_str,
