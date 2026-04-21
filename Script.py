@@ -159,20 +159,21 @@ class script(object):
 
     MOVIE_UPDATE_NOTIFY_TXT = """<b>{tag} ➤ {filename}</b>
 
-<blockquote>🎭 ɢᴇɴʀᴇs  : <b>{genres}</b>
-📺 ᴏᴛᴛ       : <b>{ott}</b>
-🎞️ ǫᴜᴀʟɪᴛʏ : <b>{quality}</b>
-🎧 ᴀᴜᴅɪᴏ    : <b>{language}</b>
-🔥 ʀᴀᴛɪɴɢ   : <b>{rating} ⭐</b>
+<blockquote>🎭 ɢᴇɴʀᴇs     : <b>{genres}</b>
+📺 ᴏᴛᴛ          : <b>{ott}</b>
+🎞️ ǫᴜᴀʟɪᴛʏ  : <b>{quality}</b>
+📐 ʀᴇsᴏʟᴜᴛɪᴏɴ : <b>{resolution}</b>
+🎧 ᴀᴜᴅɪᴏ       : <b>{language}</b>
+🔥 ʀᴀᴛɪɴɢ      : <b>{rating} ⭐</b>
 {episodes}</blockquote>"""
 
     MANUAL_UPDATE_NOTIFY_TXT = """<b>{tag} ➤ {filename}</b>
 
-<blockquote>🎭 ɢᴇɴʀᴇs  : <b>{genres}</b>
-🎞️ ǫᴜᴀʟɪᴛʏ : <b>{quality}</b>
-🎧 ᴀᴜᴅɪᴏ    : <b>{language}</b>
-🔥 ʀᴀᴛɪɴɢ   : <b>{rating} ⭐</b>
-📝 ᴘʟᴏᴛ      : <b>{plot}</b>
+<blockquote>🎭 ɢᴇɴʀᴇs     : <b>{genres}</b>
+🎞️ ǫᴜᴀʟɪᴛʏ  : <b>{quality}</b>
+📐 ʀᴇsᴏʟᴜᴛɪᴏɴ : <b>{resolution}</b>
+🎧 ᴀᴜᴅɪᴏ       : <b>{language}</b>
+🔥 ʀᴀᴛɪɴɢ      : <b>{rating} ⭐</b>
 {episodes}</blockquote>"""
 
     RESTART_TXT = """<b>
