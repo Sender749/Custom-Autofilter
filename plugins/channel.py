@@ -904,20 +904,17 @@ async def manual_movie_update(bot, message):
         )
 
         # ── 6. Buttons ────────────────────────────────────────────────────────
-        # Telegram start parameters only allow A-Z a-z 0-9 _ -
-        # display_title may contain "(2025)" or other special chars that silently
-        # break the deep link — Telegram drops the start param and the user
-        # lands in DM with no search triggered.
-        # Fix: strip year-in-parens and "Season N" (redundant for search),
-        # replace spaces with dashes, then remove any remaining invalid chars.
-        raw_q = re.sub(r'\s*\(\d{4}\)', '', display_title).strip()   # drop "(2025)"
-        raw_q = re.sub(r'\s+Season\s+\d+', '', raw_q, flags=re.IGNORECASE).strip()
-        search_query = raw_q.replace(' ', '-')
-        search_query = re.sub(r'[^A-Za-z0-9_\-]', '', search_query)  # strip illegal chars
+        # Use the admin's original input as the search query — NOT display_title.
+        # display_title is enriched with metadata (e.g. "The Boys (2019) Season 5")
+        # which may differ from what is actually stored in the DB filenames.
+        # The raw `title` (already stripped of year/season by _parse_m_query)
+        # + formatted season gives the most reliable DB match.
+        # Telegram start param rules: only A-Za-z0-9_- allowed.
+        raw_search = title  # admin's original title, lowercase, no year/season
         if season:
-            season_tag = f"S{season:02d}"
-            if season_tag.lower() not in search_query.lower():
-                search_query += f"-{season_tag}"
+            raw_search = f"{raw_search} s{season:02d}"
+        search_query = raw_search.strip().replace(" ", "-")
+        search_query = re.sub(r"[^A-Za-z0-9_\-]", "", search_query)
 
         reply_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton(
