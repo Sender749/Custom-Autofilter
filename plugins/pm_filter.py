@@ -1523,24 +1523,121 @@ async def handle_channel_reply_input(client, message):
         pass
 
 
-async def ai_spell_check(wrong_name):
-    async def search_movie(wrong_name):
-        search_results = imdb.search_movie(wrong_name)
-        movie_list = [movie['title'] for movie in search_results]
-        return movie_list
-    movie_list = await search_movie(wrong_name)
-    if not movie_list:
-        return
-    for _ in range(5):
-        closest_match = process.extractOne(wrong_name, movie_list)
-        if not closest_match or closest_match[1] <= 80:
-            return
-        movie = closest_match[0]
-        files, offset, total_results = await get_search_results(movie)
-        if files:
-            return movie
-        movie_list.remove(movie)
-    return
+async def _tmdb_title_candidates(query: str) -> list[str]:
+    """
+    Fetch title candidates for a query from TMDB (movie + TV search).
+    Returns a flat list of title strings. Never raises.
+    """
+    import socket, aiohttp, re as _re
+    from info import TMDB_API_KEY
+    if not TMDB_API_KEY:
+        return []
+    # Strip trailing season/episode tags for a cleaner TMDB query
+    clean = _re.sub(r'\bs\d{1,2}(?:e\d{1,3})?\b', '', query, flags=_re.IGNORECASE).strip()
+    clean = _re.sub(r'\bseason\s*\d+\b', '', clean, flags=_re.IGNORECASE).strip()
+    clean = _re.sub(r'\bep(?:isode)?\s*\d+\b', '', clean, flags=_re.IGNORECASE).strip()
+
+    candidates = []
+    try:
+        connector = aiohttp.TCPConnector(family=socket.AF_INET)
+        timeout = aiohttp.ClientTimeout(total=8)
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            for endpoint in ("movie", "tv"):
+                params = {
+                    "api_key": TMDB_API_KEY,
+                    "query": clean,
+                    "include_adult": "false",
+                    "page": 1,
+                }
+                async with session.get(
+                    f"https://api.themoviedb.org/3/search/{endpoint}",
+                    params=params,
+                ) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        key = "name" if endpoint == "tv" else "title"
+                        for item in (data.get("results") or [])[:8]:
+                            t = item.get(key) or item.get("original_" + key)
+                            if t:
+                                candidates.append(t)
+    except Exception as exc:
+        logger.debug("TMDB candidate fetch failed for %r: %s", query, exc)
+    return candidates
+
+
+async def ai_spell_check(wrong_name: str) -> str | None:
+    """
+    Improved spell-check using a two-stage approach:
+      1. Fetch title candidates from TMDB (movie + TV) — replaces broken Cinemagoer
+      2. For each candidate (ranked by fuzzy similarity to the wrong name),
+         check if the DB actually has files for it. Return the first hit.
+
+    Falls back to direct DB fuzzy search if TMDB returns nothing.
+    """
+    from fuzzywuzzy import process as fuzz_process
+
+    query_lower = wrong_name.strip().lower()
+
+    # ── Stage 1: TMDB candidates ──────────────────────────────────────────────
+    candidates = await _tmdb_title_candidates(wrong_name)
+
+    if candidates:
+        # Rank by fuzzy similarity to the user's input
+        ranked = fuzz_process.extract(wrong_name, candidates, limit=10)
+        # ranked = [(title, score), ...]
+        for title, score in ranked:
+            if score < 60:
+                continue
+            files, _, total = await get_search_results(title)
+            if files:
+                logger.info("ai_spell_check: '%s' → '%s' (score=%d, via TMDB)", wrong_name, title, score)
+                return title
+            # Also try just the base title without year
+            base = re.sub(r'\s*\(\d{4}\)\s*$', '', title).strip()
+            if base != title:
+                files, _, total = await get_search_results(base)
+                if files:
+                    logger.info("ai_spell_check: '%s' → '%s' (base, via TMDB)", wrong_name, base)
+                    return base
+
+    # ── Stage 2: Direct DB fuzzy fallback ────────────────────────────────────
+    # Sample a small set of distinct titles from the DB and fuzzy-match.
+    # This handles cases where TMDB finds nothing (very new/niche content).
+    try:
+        from database.ia_filterdb import collection, second_collection, is_second_db_configured, SECOND_FILES_DATABASE_URL
+        # Pull up to 2000 filenames; use a projection to keep it cheap
+        sample_cursor = collection.find({}, {"file_name": 1, "_id": 0}).limit(2000)
+        sample_names = [doc["file_name"] for doc in sample_cursor if doc.get("file_name")]
+        if SECOND_FILES_DATABASE_URL and second_collection is not None:
+            s2 = list(second_collection.find({}, {"file_name": 1, "_id": 0}).limit(1000))
+            sample_names += [d["file_name"] for d in s2 if d.get("file_name")]
+
+        if sample_names:
+            # Extract the "base title" from each filename for matching
+            def _base(fn: str) -> str:
+                # Remove quality/resolution/episode tags → left with title
+                fn = re.sub(r'\b(S\d{1,2}E?\d{0,3}|Season\s*\d+|\d{3,4}p|BluRay|WEBRip|WEB-DL|HDRip|HEVC|x264|x265|AAC|DDP5?\.?\d?)\b.*', '', fn, flags=re.IGNORECASE)
+                fn = re.sub(r'[._\-]+', ' ', fn)
+                return fn.strip().lower()
+
+            base_to_raw = {}
+            for fn in sample_names:
+                b = _base(fn)
+                if b and b not in base_to_raw:
+                    base_to_raw[b] = fn
+
+            ranked_db = fuzz_process.extract(query_lower, list(base_to_raw.keys()), limit=5)
+            for base_title, score in ranked_db:
+                if score < 70:
+                    continue
+                files, _, total = await get_search_results(base_title)
+                if files:
+                    logger.info("ai_spell_check: '%s' → '%s' (score=%d, DB fuzzy)", wrong_name, base_title, score)
+                    return base_title
+    except Exception as exc:
+        logger.debug("ai_spell_check DB fuzzy fallback error: %s", exc)
+
+    return None
 
 async def auto_filter(client, msg, spoll=False):
     if not spoll:
@@ -1734,51 +1831,66 @@ async def auto_filter(client, msg, spoll=False):
         asyncio.create_task(handle_auto_delete(k))
 
 async def show_suggestions(bot, message, query):
-    try:
-        movies = await get_poster(query, bulk=True)
-    except Exception:
-        movies = []
-    buttons = []
-    titles = []
-    if movies:
-        for movie in movies:
-            title = movie.get("title")
-            year = movie.get("year")
-            if title:
-                titles.append(f"{title} ({year})" if year else title)
+    # ── Fetch candidates from TMDB (replaces broken Cinemagoer get_poster) ────
+    tmdb_candidates = await _tmdb_title_candidates(query)
+
+    # Build deduplicated title list
     seen = set()
     clean_titles = []
-    for t in titles:
+    for t in tmdb_candidates:
         key = t.lower()
         if key not in seen:
             seen.add(key)
             clean_titles.append(t)
+
+    # ── If TMDB returned nothing, fall back to DB fuzzy titles ───────────────
+    if not clean_titles:
+        try:
+            from database.ia_filterdb import collection, SECOND_FILES_DATABASE_URL, second_collection
+            from fuzzywuzzy import process as fuzz_process
+            sample_cursor = collection.find({}, {"file_name": 1, "_id": 0}).limit(2000)
+            sample_names = [doc["file_name"] for doc in sample_cursor if doc.get("file_name")]
+            if SECOND_FILES_DATABASE_URL and second_collection is not None:
+                s2 = list(second_collection.find({}, {"file_name": 1, "_id": 0}).limit(1000))
+                sample_names += [d["file_name"] for d in s2 if d.get("file_name")]
+            def _base(fn):
+                fn = re.sub(r'\b(S\d{1,2}E?\d{0,3}|Season\s*\d+|\d{3,4}p|BluRay|WEBRip|WEB-DL|HDRip|HEVC|x264|x265|AAC|DDP5?\.?\d?)\b.*', '', fn, flags=re.IGNORECASE)
+                return re.sub(r'[._\-]+', ' ', fn).strip()
+            bases = list({_base(n).lower(): _base(n) for n in sample_names if _base(n)}.values())
+            ranked = fuzz_process.extract(query, bases, limit=MAX_SUGGESTIONS)
+            clean_titles = [t for t, score in ranked if score >= 55]
+        except Exception as exc:
+            logger.debug("show_suggestions DB fallback error: %s", exc)
+
+    buttons = []
     for t in clean_titles[:MAX_SUGGESTIONS]:
-        buttons.append([InlineKeyboardButton(text=t, callback_data=f"spelling#{t}")
-        ])
+        buttons.append([InlineKeyboardButton(text=t, callback_data=f"spelling#{t}")])
+
     buttons.append([
-        InlineKeyboardButton("🔍 ᴄʜᴇᴄᴋ sᴘᴇʟʟɪɴɢ ᴏɴ ɢᴏᴏɢʟᴇ 🔍", url=f"https://www.google.com/search?q={query.replace(' ', '+')}")
+        InlineKeyboardButton("🔍 ᴄʜᴇᴄᴋ sᴘᴇʟʟɪɴɢ ᴏɴ ɢᴏᴏɢʟᴇ 🔍",
+                             url=f"https://www.google.com/search?q={query.replace(' ', '+')}")
     ])
-    buttons.append([InlineKeyboardButton("📮 ʀᴇǫᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ 📮", callback_data=f"req_admin#{query}#{message.from_user.id}")
+    buttons.append([
+        InlineKeyboardButton("📮 ʀᴇǫᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ 📮",
+                             callback_data=f"req_admin#{query}#{message.from_user.id}")
     ])
+
     text = (
         f"<b>😕 I couldn't find any exact results for: <code>{query}</code></b>\n\n"
-        #f"✅ If one of these matches your request, tap it.\n"
-        #f"📩 If your spelling is correct, you can request it from admin.\n"
-        #f"🌐 Or use Google to double-check the title spelling.\n"
         f"<b>🔎 These are some related titles you might be looking for 👇</b>"
     )
     sent = await message.reply_text(
         text,
         reply_markup=InlineKeyboardMarkup(buttons),
-        disable_web_page_preview=True
+        disable_web_page_preview=True,
     )
     SUGGESTION_TRACKER[sent.id] = {
         "clicked": False,
         "query": query,
-        "user": message.from_user
+        "user": message.from_user,
     }
     asyncio.create_task(suggestion_timeout_handler(bot, sent))
+
 
 async def suggestion_timeout_handler(bot, msg):
     await asyncio.sleep(SUGGESTION_TIMEOUT)
