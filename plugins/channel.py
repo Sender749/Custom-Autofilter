@@ -397,26 +397,13 @@ async def send_movie_update(bot, base_name):
                 return None
 
             text = generate_movie_message(movie_doc, base_name)
-            # Row 1: one button per source channel ("✨ Get Direct File ✨")
             channels = set()
             for f in movie_doc["files"]:
                 link = f.get("source_channel")
                 if link:
                     channels.add(link)
-            buttons = [
-                [InlineKeyboardButton("✨ ɢᴇᴛ ᴅɪʀᴇᴄᴛ ꜰɪʟᴇ ✨", url=link)]
-                for link in sorted(channels)
-            ]
-            # Row 2: Watch & Download
-            buttons.append([InlineKeyboardButton(
-                "📥 Watch & Download",
-                url=f"https://t.me/{temp.U_NAME}?start=getfile-{base_name.replace(' ', '-')}"
-            )])
-            # Row 3: Viral Stuff
-            buttons.append([InlineKeyboardButton(
-                "♨️ Viral Stuff ♨️",
-                url="https://t.me/Reload_adultbot"
-            )])
+            buttons = [[InlineKeyboardButton("✨ ɢᴇᴛ ᴅɪʀᴇᴄᴛ ꜰɪʟᴇ ✨", url=link)] for link in sorted(channels)]
+            buttons.append([InlineKeyboardButton("♨️ Viral Stuff ♨️", url="https://t.me/Reload_adultbot")])
             reply_markup = InlineKeyboardMarkup(buttons)
             poster_url = movie_doc.get("poster_url")
             resized_poster = None
@@ -472,18 +459,8 @@ async def update_movie_message(bot, base_name):
             link = f.get("source_channel")
             if link:
                 channels.add(link)
-        buttons = [
-            [InlineKeyboardButton("✨ ɢᴇᴛ ᴅɪʀᴇᴄᴛ ꜰɪʟᴇ ✨", url=link)]
-            for link in sorted(channels)
-        ]
-        buttons.append([InlineKeyboardButton(
-            "📥 Watch & Download",
-            url=f"https://t.me/{temp.U_NAME}?start=getfile-{base_name.replace(' ', '-')}"
-        )])
-        buttons.append([InlineKeyboardButton(
-            "♨️ Viral Stuff ♨️",
-            url="https://t.me/Reload_adultbot"
-        )])
+        buttons = [[InlineKeyboardButton("✨ ɢᴇᴛ ᴅɪʀᴇᴄᴛ ꜰɪʟᴇ ✨", url=link)]for link in sorted(channels)]
+        buttons.append([InlineKeyboardButton("♨️ Viral Stuff ♨️", url="https://t.me/Reload_adultbot")])
         reply_markup = InlineKeyboardMarkup(buttons)
         message_id = movie_doc.get("message_id")
         is_photo = movie_doc.get("is_photo", False)
@@ -938,11 +915,7 @@ async def manual_movie_update(bot, message):
         reply_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton(
                 "🔍 ɢᴇᴛ ꜰɪʟᴇs",
-                url=f"https://t.me/{temp.U_NAME}?start=getfile-{search_query}"
-            )],
-            [InlineKeyboardButton(
-                "📥 Watch & Download",
-                url=f"https://t.me/{temp.U_NAME}?start=getfile-{search_query}"
+                url=f"https://t.me/{temp.U_NAME}?start=getfile-{base_name.replace(' ', '-')}"
             )],
             [InlineKeyboardButton(
                 "♨️ Viral Stuff ♨️",
