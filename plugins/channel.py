@@ -904,9 +904,16 @@ async def manual_movie_update(bot, message):
         )
 
         # ── 6. Buttons ────────────────────────────────────────────────────────
-        # Deep link format already supported by the /start handler:
-        #   ?start=getfile-{query-with-dashes}  →  auto_filter(query)
-        search_query = display_title.replace(" ", "-")
+        # Telegram start parameters only allow A-Z a-z 0-9 _ -
+        # display_title may contain "(2025)" or other special chars that silently
+        # break the deep link — Telegram drops the start param and the user
+        # lands in DM with no search triggered.
+        # Fix: strip year-in-parens and "Season N" (redundant for search),
+        # replace spaces with dashes, then remove any remaining invalid chars.
+        raw_q = re.sub(r'\s*\(\d{4}\)', '', display_title).strip()   # drop "(2025)"
+        raw_q = re.sub(r'\s+Season\s+\d+', '', raw_q, flags=re.IGNORECASE).strip()
+        search_query = raw_q.replace(' ', '-')
+        search_query = re.sub(r'[^A-Za-z0-9_\-]', '', search_query)  # strip illegal chars
         if season:
             season_tag = f"S{season:02d}"
             if season_tag.lower() not in search_query.lower():
