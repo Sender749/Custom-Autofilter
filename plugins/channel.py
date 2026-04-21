@@ -78,6 +78,16 @@ QUALITY_PATTERN = re.compile(
     r"360p|480p|720p|1080p|2160p|4K|1440p|540p|240p|140p|HEVC|HDRip)\b", 
     re.IGNORECASE
 )
+# Separate patterns: source/quality vs resolution
+SOURCE_PATTERN = re.compile(
+    r"\b(?:HDCam|HDTC|CamRip|TS|TC|TeleSync|DVDScr|DVDRip|PreDVD|"
+    r"WEBRip|WEB-DL|WEB DL|WebDl|TVRip|HDTV|BluRay|BRRip|BDRip|HDRip|HEVC)\b",
+    re.IGNORECASE
+)
+RESOLUTION_PATTERN = re.compile(
+    r"\b(?:360p|480p|540p|720p|960p|1080p|1440p|2160p|4K|240p|140p)\b",
+    re.IGNORECASE
+)
 YEAR_PATTERN = re.compile(r"(?<![A-Za-z0-9])(?:19|20)\d{2}(?![A-Za-z0-9])")
 RANGE_REGEX = re.compile(r'\bS(\d{1,2})[^\w\n\r]*E(?:p(?:isode)?)?0*(\d{1,2})\s*(?:to|-)\s*(?:E(?:p(?:isode)?)?)?0*(\d{1,2})',re.IGNORECASE)
 SINGLE_REGEX = re.compile(r'\bS(\d{1,2})[^\w\n\r]*E(?:p(?:isode)?)?0*(\d{1,3})', re.IGNORECASE)
@@ -143,6 +153,31 @@ def get_qualities(text: str) -> str:
     qualities = QUALITY_PATTERN.findall(text)
     return ", ".join(qualities) if qualities else "N/A"
 
+def get_source_quality(text: str) -> str:
+    """Return source/format tags only: WEBRip, BluRay, HDRip, etc."""
+    found = SOURCE_PATTERN.findall(text)
+    # Deduplicate while preserving order, normalise case
+    seen = set()
+    result = []
+    for q in found:
+        key = q.lower()
+        if key not in seen:
+            seen.add(key)
+            result.append(q)
+    return ", ".join(result) if result else "N/A"
+
+def get_resolution(text: str) -> str:
+    """Return resolution tags only: 720p, 1080p, 4K, etc."""
+    found = RESOLUTION_PATTERN.findall(text)
+    seen = set()
+    result = []
+    for r in found:
+        key = r.lower()
+        if key not in seen:
+            seen.add(key)
+            result.append(r.upper() if r.lower() == "4k" else r)
+    return ", ".join(result) if result else "N/A"
+
 def extract_ott_platform(text: str) -> str:
     text = text.lower()
     platforms = {plat for key, plat in OTT_PLATFORMS.items() if key in text}
@@ -180,7 +215,8 @@ def extract_media_info(filename: str, caption: str):
     season = episode = year = None
     tag = "#MOVIE"
     processed_raw = base_raw = filename
-    quality = get_qualities(caption_clean) or get_qualities(filename.lower()) or "N/A"
+    quality = get_source_quality(caption_clean) or get_source_quality(filename.lower()) or "N/A"
+    resolution = get_resolution(caption_clean) or get_resolution(filename.lower()) or "N/A"
     ott_platform = extract_ott_platform(f"{filename} {caption_clean}")
     lang_keys = {k for k in CAPTION_LANGUAGES if k in caption_clean or k in filename.lower()}
     language = ", ".join(sorted({CAPTION_LANGUAGES[k] for k in lang_keys})) if lang_keys else "N/A"
@@ -230,6 +266,7 @@ def extract_media_info(filename: str, caption: str):
         "episode": episode,
         "year": year,
         "quality": quality,
+        "resolution": resolution,
         "ott_platform": ott_platform,
         "language": language
     }
@@ -262,6 +299,7 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
         "filename": filename,
         "processed": processed,
         "quality": media_info["quality"],
+        "resolution": media_info["resolution"],
         "language": media_info["language"],
         "ott_platform": media_info["ott_platform"],
         "timestamp": datetime.now(),
@@ -359,14 +397,26 @@ async def send_movie_update(bot, base_name):
                 return None
 
             text = generate_movie_message(movie_doc, base_name)
-            # Build deep link: clicking button opens bot DM and auto-searches the title
-            search_query = base_name.replace(" ", "-")
-            buttons = [[
-                InlineKeyboardButton(
-                    "🔍 ɢᴇᴛ ꜰɪʟᴇs",
-                    url=f"https://t.me/{temp.U_NAME}?start=getfile-{search_query}"
-                )
-            ]]
+            # Row 1: one button per source channel ("✨ Get Direct File ✨")
+            channels = set()
+            for f in movie_doc["files"]:
+                link = f.get("source_channel")
+                if link:
+                    channels.add(link)
+            buttons = [
+                [InlineKeyboardButton("✨ ɢᴇᴛ ᴅɪʀᴇᴄᴛ ꜰɪʟᴇ ✨", url=link)]
+                for link in sorted(channels)
+            ]
+            # Row 2: Watch & Download
+            buttons.append([InlineKeyboardButton(
+                "📥 Watch & Download",
+                url=f"https://t.me/{temp.U_NAME}?start=getfile-{base_name.replace(' ', '-')}"
+            )])
+            # Row 3: Viral Stuff
+            buttons.append([InlineKeyboardButton(
+                "♨️ Viral Stuff ♨️",
+                url="https://t.me/Reload_adultbot"
+            )])
             reply_markup = InlineKeyboardMarkup(buttons)
             poster_url = movie_doc.get("poster_url")
             resized_poster = None
@@ -417,13 +467,23 @@ async def update_movie_message(bot, base_name):
             return
 
         text = generate_movie_message(movie_doc, base_name)
-        search_query = base_name.replace(" ", "-")
-        buttons = [[
-            InlineKeyboardButton(
-                "🔍 ɢᴇᴛ ꜰɪʟᴇs",
-                url=f"https://t.me/{temp.U_NAME}?start=getfile-{search_query}"
-            )
-        ]]
+        channels = set()
+        for f in movie_doc["files"]:
+            link = f.get("source_channel")
+            if link:
+                channels.add(link)
+        buttons = [
+            [InlineKeyboardButton("✨ ɢᴇᴛ ᴅɪʀᴇᴄᴛ ꜰɪʟᴇ ✨", url=link)]
+            for link in sorted(channels)
+        ]
+        buttons.append([InlineKeyboardButton(
+            "📥 Watch & Download",
+            url=f"https://t.me/{temp.U_NAME}?start=getfile-{base_name.replace(' ', '-')}"
+        )])
+        buttons.append([InlineKeyboardButton(
+            "♨️ Viral Stuff ♨️",
+            url="https://t.me/Reload_adultbot"
+        )])
         reply_markup = InlineKeyboardMarkup(buttons)
         message_id = movie_doc.get("message_id")
         is_photo = movie_doc.get("is_photo", False)
@@ -471,26 +531,40 @@ async def update_movie_message(bot, base_name):
         logger.error(f"Failed to update movie message: {e}")
 
 def generate_movie_message(movie_doc, base_name):
-    all_qualities = set()
-    all_languages = set()
+    all_qualities   = set()
+    all_resolutions = set()
+    all_languages   = set()
     all_ott_platforms = set()
-    all_tags = set()
+    all_tags        = set()
     episodes_by_season = defaultdict(set)
 
     for file in movie_doc["files"]:
-        if file["quality"] != "N/A":
-            all_qualities.update(q.strip() for q in file["quality"].split(",") if q.strip())
-        if file["language"] != "N/A":
+        q = file.get("quality", "N/A")
+        if q and q != "N/A":
+            all_qualities.update(x.strip() for x in q.split(",") if x.strip())
+        r = file.get("resolution", "N/A")
+        if r and r != "N/A":
+            all_resolutions.update(x.strip() for x in r.split(",") if x.strip())
+        # If resolution not stored (old docs), try to extract it from quality field
+        # (backward-compat: old docs stored everything in "quality")
+        if not r or r == "N/A":
+            old_q = file.get("quality", "N/A")
+            if old_q and old_q != "N/A":
+                res = get_resolution(old_q)
+                if res != "N/A":
+                    all_resolutions.update(x.strip() for x in res.split(",") if x.strip())
+                src = get_source_quality(old_q)
+                if src != "N/A":
+                    all_qualities.update(x.strip() for x in src.split(",") if x.strip())
+        if file.get("language", "N/A") != "N/A":
             all_languages.update(l.strip() for l in file["language"].split(",") if l.strip())
-        if file["ott_platform"] != "N/A":
+        if file.get("ott_platform", "N/A") != "N/A":
             platforms = [p.strip() for p in file["ott_platform"].split("|") if p.strip()]
             all_ott_platforms.update(platforms)
-        if file["tag"]:
+        if file.get("tag"):
             all_tags.add(file["tag"])
         if file.get("season") and file.get("episode"):
-            season = file["season"]
-            episode = file["episode"]
-            episodes_by_season[season].add(episode)
+            episodes_by_season[file["season"]].add(file["episode"])
 
     primary_tag = "#SERIES" if "#SERIES" in all_tags else "#MOVIE"
     epi_block = ""
@@ -531,26 +605,27 @@ def generate_movie_message(movie_doc, base_name):
             epi_block = f"📺 ᴇᴘɪsᴏᴅᴇs : <b>{epi_str}</b>"
 
     genres = movie_doc.get("genres", "N/A")
-    quality_str = ", ".join(sorted(all_qualities)) if all_qualities else "N/A"
-    language_str = ", ".join(sorted(all_languages)) if all_languages else "N/A"
-    ott_str = ", ".join(sorted(all_ott_platforms)) if all_ott_platforms else "N/A"
+    quality_str    = ", ".join(sorted(all_qualities))    if all_qualities    else "N/A"
+    resolution_str = ", ".join(sorted(all_resolutions))  if all_resolutions  else "N/A"
+    language_str   = ", ".join(sorted(all_languages))   if all_languages    else "N/A"
+    ott_str        = ", ".join(sorted(all_ott_platforms)) if all_ott_platforms else "N/A"
 
     rating_raw = movie_doc.get("rating", "N/A")
-    # Ensure rating is a clean string (could be float from TMDB)
     try:
         rating_display = f"{float(rating_raw):.1f}" if rating_raw and rating_raw != "N/A" else "N/A"
     except (ValueError, TypeError):
         rating_display = str(rating_raw) if rating_raw else "N/A"
 
     return script.MOVIE_UPDATE_NOTIFY_TXT.format(
-        filename=base_name,
-        tag=primary_tag,
-        genres=genres,
-        ott=ott_str,
-        quality=quality_str,
-        language=language_str,
-        episodes=epi_block,
-        rating=rating_display,
+        filename   = base_name,
+        tag        = primary_tag,
+        genres     = genres,
+        ott        = ott_str,
+        quality    = quality_str,
+        resolution = resolution_str,
+        language   = language_str,
+        episodes   = epi_block,
+        rating     = rating_display,
     )
 
 
@@ -633,6 +708,7 @@ async def _build_manual_update_doc(title: str, year: str, season: int):
 
     # Derive per-file metadata from the DB results
     all_qualities    = set()
+    all_resolutions  = set()
     all_languages    = set()
     all_ott_platforms = set()
     all_tags         = set()
@@ -643,9 +719,13 @@ async def _build_manual_update_doc(title: str, year: str, season: int):
         cap     = f.get("caption", "") or ""
         unified = f"{fname} {cap}".lower()
 
-        q = get_qualities(unified)
-        if q != "N/A":
-            all_qualities.update(x.strip() for x in q.split(",") if x.strip())
+        src = get_source_quality(unified)
+        if src != "N/A":
+            all_qualities.update(x.strip() for x in src.split(",") if x.strip())
+
+        res = get_resolution(unified)
+        if res != "N/A":
+            all_resolutions.update(x.strip() for x in res.split(",") if x.strip())
 
         lang_keys = {k for k in CAPTION_LANGUAGES if k in unified}
         for k in lang_keys:
@@ -699,8 +779,9 @@ async def _build_manual_update_doc(title: str, year: str, season: int):
 
     # Synthesise a fake movie_doc so we can reuse existing render helpers
     pseudo_files = [{
-        "quality":      ", ".join(sorted(all_qualities)) or "N/A",
-        "language":     ", ".join(sorted(all_languages)) or "N/A",
+        "quality":      ", ".join(sorted(all_qualities))   or "N/A",
+        "resolution":   ", ".join(sorted(all_resolutions)) or "N/A",
+        "language":     ", ".join(sorted(all_languages))   or "N/A",
         "ott_platform": " | ".join(sorted(all_ott_platforms)) or "N/A",
         "tag":          primary_tag,
         "season":       None,
@@ -797,9 +878,6 @@ async def manual_movie_update(bot, message):
         except (ValueError, TypeError):
             rating_display = str(rating_raw) if rating_raw else "N/A"
 
-        plot_raw = (details.get("plot") or "").strip()
-        plot = plot_raw[:300] + "…" if len(plot_raw) > 300 else (plot_raw or "N/A")
-
         if used_tmdb and LANDSCAPE_POSTER and details.get("backdrop_url"):
             poster_url = details["backdrop_url"]
         else:
@@ -817,48 +895,60 @@ async def manual_movie_update(bot, message):
         if season:
             primary_tag = "#SERIES"
 
-        # Aggregate quality / language from DB
-        all_qualities = set()
-        all_languages = set()
+        # Aggregate quality / language / resolution from DB
+        all_qualities  = set()
+        all_resolutions = set()
+        all_languages  = set()
         for f in pseudo_doc["files"]:
             q = f.get("quality", "N/A")
-            if q != "N/A":
+            if q and q != "N/A":
                 all_qualities.update(x.strip() for x in q.split(",") if x.strip())
+            r = f.get("resolution", "N/A")
+            if r and r != "N/A":
+                all_resolutions.update(x.strip() for x in r.split(",") if x.strip())
             lang = f.get("language", "N/A")
-            if lang != "N/A":
+            if lang and lang != "N/A":
                 all_languages.update(x.strip() for x in lang.split(",") if x.strip())
 
-        quality_str  = ", ".join(sorted(all_qualities))  or "N/A"
-        language_str = ", ".join(sorted(all_languages))  or "N/A"
+        quality_str    = ", ".join(sorted(all_qualities))    or "N/A"
+        resolution_str = ", ".join(sorted(all_resolutions))  or "N/A"
+        language_str   = ", ".join(sorted(all_languages))    or "N/A"
 
         # ── 5. Build caption ──────────────────────────────────────────────────
         text = script.MANUAL_UPDATE_NOTIFY_TXT.format(
-            tag       = primary_tag,
-            filename  = display_title,
-            genres    = genres,
-            quality   = quality_str,
-            language  = language_str,
-            rating    = rating_display,
-            plot      = plot,
-            episodes  = epi_block,
+            tag        = primary_tag,
+            filename   = display_title,
+            genres     = genres,
+            quality    = quality_str,
+            resolution = resolution_str,
+            language   = language_str,
+            rating     = rating_display,
+            episodes   = epi_block,
         )
 
-        # ── 6. Button: opens bot DM → auto_filter runs the search ─────────────
+        # ── 6. Buttons ────────────────────────────────────────────────────────
         # Deep link format already supported by the /start handler:
         #   ?start=getfile-{query-with-dashes}  →  auto_filter(query)
         search_query = display_title.replace(" ", "-")
         if season:
-            # Include season in search so users land on the right results
             season_tag = f"S{season:02d}"
             if season_tag.lower() not in search_query.lower():
                 search_query += f"-{season_tag}"
 
-        reply_markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
+        reply_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton(
                 "🔍 ɢᴇᴛ ꜰɪʟᴇs",
                 url=f"https://t.me/{temp.U_NAME}?start=getfile-{search_query}"
-            )
-        ]])
+            )],
+            [InlineKeyboardButton(
+                "📥 Watch & Download",
+                url=f"https://t.me/{temp.U_NAME}?start=getfile-{search_query}"
+            )],
+            [InlineKeyboardButton(
+                "♨️ Viral Stuff ♨️",
+                url="https://t.me/Reload_adultbot"
+            )],
+        ])
 
         # ── 7. Send to MOVIE_UPDATE_CHANNEL ───────────────────────────────────
         resized_poster = None
