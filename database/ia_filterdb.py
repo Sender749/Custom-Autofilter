@@ -193,6 +193,64 @@ async def _classify_file(file_name: str, caption: str) -> str:
         logger.error(f"_classify_file error: {e}")
         return 'movie'
 
+def normalize_query(query: str) -> str:
+    """
+    Normalize natural-language season/episode phrases into compact tokens
+    that match typical file-naming conventions stored in the database.
+
+    Examples:
+      "Tazza khabar season 1 all episodes"  →  "Tazza khabar s01"
+      "breaking bad season 5 episode 10"    →  "breaking bad s05e10"
+      "money heist season 3 all episodes"   →  "money heist s03"
+      "dark s02 e05"                        →  "dark s02e05"   (space between s/e tokens merged)
+      "ironman"                             →  "ironman"       (unchanged)
+    """
+    q = query.strip()
+
+    # ── Merge spaced "s01 e05" → "s01e05" ────────────────────────────────────
+    q = re.sub(r'\b(s\d{1,2})\s+(e\d{1,3})\b', r'\1\2', q, flags=re.IGNORECASE)
+
+    # ── "season N episode M" → "sNNeMM" ──────────────────────────────────────
+    q = re.sub(
+        r'\bseason\s*(\d{1,2})\s+episode\s*(\d{1,3})\b',
+        lambda m: f"s{int(m.group(1)):02d}e{int(m.group(2)):02d}",
+        q, flags=re.IGNORECASE
+    )
+
+    # ── "season N ep M" → "sNNeMM" ───────────────────────────────────────────
+    q = re.sub(
+        r'\bseason\s*(\d{1,2})\s+ep\s*(\d{1,3})\b',
+        lambda m: f"s{int(m.group(1)):02d}e{int(m.group(2)):02d}",
+        q, flags=re.IGNORECASE
+    )
+
+    # ── "season N all episodes" / "season N complete" → "sNN" ────────────────
+    q = re.sub(
+        r'\bseason\s*(\d{1,2})\s+(?:all\s+episodes?|complete|episodes?)\b',
+        lambda m: f"s{int(m.group(1)):02d}",
+        q, flags=re.IGNORECASE
+    )
+
+    # ── Bare "season N" → "sNN" ───────────────────────────────────────────────
+    q = re.sub(
+        r'\bseason\s*(\d{1,2})\b',
+        lambda m: f"s{int(m.group(1)):02d}",
+        q, flags=re.IGNORECASE
+    )
+
+    # ── Bare "episode M" / "ep M" (no season) → "eMM" ────────────────────────
+    q = re.sub(
+        r'\b(?:episode|ep)\s*(\d{1,3})\b',
+        lambda m: f"e{int(m.group(1)):02d}",
+        q, flags=re.IGNORECASE
+    )
+
+    # ── Drop filler words users add (but NOT after conversion above) ──────────
+    q = re.sub(r'\b(?:all\s+episodes?|complete\s+series|full\s+season)\b', '', q, flags=re.IGNORECASE)
+
+    return ' '.join(q.split()).strip()
+
+
 def clean_query(query, filter_words):
     if not query:
         return query
@@ -204,6 +262,7 @@ def clean_query(query, filter_words):
 
 async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
     query = str(query).strip()
+    query = normalize_query(query)          # ← season/episode normalization
     filter_words = await get_filter_words()
     query = clean_query(query, filter_words)
     if not query:
