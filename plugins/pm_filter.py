@@ -2045,7 +2045,8 @@ async def silicon_spell_check(message):
     try:
         await message.delete()
     except:
-        pass    if message.text.startswith("/"):
+        pass
+    if message.text.startswith("/"):
         return
     sili = silicondb.get_bot_sttgs()
     if not sili.get('PM_SEARCH', False) if sili else False:
