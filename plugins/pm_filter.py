@@ -1567,142 +1567,134 @@ async def _tmdb_title_candidates(query: str) -> list[str]:
 
 async def ai_spell_check(wrong_name: str) -> str | None:
     """
-    Enhanced spell-check using a three-stage approach:
+    Fast two-stage spell correction focused on DB-first matching.
 
-      Stage 1 – TMDB (movie + TV) with variant generation:
-        Handles missing letters, wrong letters, missing/extra spaces.
-        e.g. "ionman" → "Iron Man", "braking bed" → "Breaking Bad"
+    Stage 1 – DB fuzzy match (fast, no network):
+      Loads base titles from DB and uses fuzzywuzzy token_set_ratio to find
+      the closest match. Handles the most common user mistakes:
+        • Missing letters      : "ionman"      → "Iron Man"
+        • Extra letters        : "ironmann"     → "Iron Man"
+        • Wrong letter         : "braking bad"  → "Breaking Bad"
+        • Missing space        : "breakingbad"  → "Breaking Bad"
+        • Extra space          : "iron  man"    → "Iron Man"
+        • Wrong position       : "bad breaking" → "Breaking Bad"
+        • Mixed mistakes       : "dhuranhar"    → "Dhurandhar"
 
-      Stage 2 – IMDB via Cinemagoer:
-        Extra fallback for regional/niche titles.
+    Stage 2 – TMDB fallback (network, only if DB stage fails):
+      For typos that are too severe for fuzzy DB matching (e.g. the title
+      doesn't exist in DB at all), we ask TMDB once with the raw query.
 
-      Stage 3 – Direct DB fuzzy match:
-        Final fallback for content not on public databases.
-
-    Returns the corrected search string that yields DB results, or None.
+    Returns corrected title string that has DB results, or None.
     """
-    from fuzzywuzzy import process as fuzz_process
     from fuzzywuzzy import fuzz as fuzz_scorer
+    from fuzzywuzzy import process as fuzz_process
 
     raw = wrong_name.strip()
+    if not raw:
+        return None
     query_lower = raw.lower()
 
     def _strip_year(t: str) -> str:
-        import re as _re
-        return _re.sub(r'\s*\(\d{4}\)\s*$', '', t).strip()
+        return re.sub(r'\s*\(\d{4}\)\s*$', '', t).strip()
 
-    def _query_variants(q: str) -> list:
-        """Generate plausible variants of a misspelled query to widen TMDB hits."""
-        import re as _re
-        variants = [q]
-        # CamelCase split: "IronMan" → "Iron Man"
-        spaced = _re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', q)
-        if spaced != q:
-            variants.append(spaced)
-        # Merge all spaces: "iron man" → "ironman"
-        merged = q.replace(' ', '')
-        if merged != q and merged not in variants:
-            variants.append(merged)
-        # If no spaces, try inserting one at each position
-        if ' ' not in q and len(q) >= 4:
-            for i in range(2, len(q) - 1):
-                v = q[:i] + ' ' + q[i:]
-                if v not in variants:
-                    variants.append(v)
-        return list(dict.fromkeys(variants))
-
-    def _best_score(title: str) -> int:
-        tl = title.lower()
-        return max(
-            fuzz_scorer.ratio(query_lower, tl),
-            fuzz_scorer.partial_ratio(query_lower, tl),
-            fuzz_scorer.token_set_ratio(query_lower, tl),
+    def _base_title(fn: str) -> str:
+        """Strip technical tags, keep only the clean title."""
+        fn = re.sub(
+            r'\b(S\d{1,2}E?\d{0,3}|Season\s*\d+|Episode\s*\d+|\d{3,4}p'
+            r'|BluRay|BDRip|Remux|WEBRip|WEB-DL|HDRip|DVDRip|CAM|TS'
+            r'|HEVC|x264|x265|AVC|AV1|AAC|DDP5?\.?\d?|FLAC|MP3|AC3|DTS'
+            r'|ESub|Subs?|Hindi|Tamil|Telugu|Malayalam|Kannada|Punjabi'
+            r'|English|Dual|Multi|HQ|HD|UHD|SDR|HDR|Dolby)\b.*',
+            '', fn, flags=re.IGNORECASE
         )
+        fn = re.sub(r'[._\-\+\[\]()]+', ' ', fn)
+        fn = re.sub(r'\s{2,}', ' ', fn)
+        return fn.strip().lower()
 
-    # ── Stage 1: TMDB ─────────────────────────────────────────────────────────
-    all_tmdb_candidates = []
-    seen_cands = set()
-    for variant in _query_variants(raw):
-        cands = await _tmdb_title_candidates(variant)
-        for c in cands:
-            if c.lower() not in seen_cands:
-                seen_cands.add(c.lower())
-                all_tmdb_candidates.append(c)
-
-    if all_tmdb_candidates:
-        scored = sorted([(t, _best_score(t)) for t in all_tmdb_candidates], key=lambda x: -x[1])
-        for title, score in scored:
-            if score < 50:
-                continue
-            for search_title in list(dict.fromkeys([title, _strip_year(title)])):
-                files, _, _ = await get_search_results(search_title)
-                if files:
-                    logger.info("ai_spell_check[TMDB]: '%s' → '%s' (score=%d)", wrong_name, search_title, score)
-                    return search_title
-
-    # ── Stage 2: IMDB via Cinemagoer ─────────────────────────────────────────
-    try:
-        imdb_results = imdb.search_movie(query_lower, results=8)
-        if imdb_results:
-            imdb_titles = [r.get('title') for r in imdb_results if r.get('title')]
-            for title in imdb_titles:
-                score = max(
-                    fuzz_scorer.ratio(query_lower, title.lower()),
-                    fuzz_scorer.partial_ratio(query_lower, title.lower()),
-                    fuzz_scorer.token_set_ratio(query_lower, title.lower()),
-                )
-                if score < 50:
-                    continue
-                for search_title in list(dict.fromkeys([title, _strip_year(title)])):
-                    files, _, _ = await get_search_results(search_title)
-                    if files:
-                        logger.info("ai_spell_check[IMDB]: '%s' → '%s' (score=%d)", wrong_name, search_title, score)
-                        return search_title
-    except Exception as exc:
-        logger.debug("ai_spell_check IMDB stage error: %s", exc)
-
-    # ── Stage 3: Direct DB fuzzy fallback ────────────────────────────────────
+    # ── Stage 1: DB fuzzy match ───────────────────────────────────────────────
+    # Pull distinct base titles from DB (cheap projection query)
     try:
         from database.ia_filterdb import collection as _col, second_collection as _col2, SECOND_FILES_DATABASE_URL as _s2url
 
-        sample_names = [doc["file_name"] for doc in _col.find({}, {"file_name": 1, "_id": 0}).limit(3000) if doc.get("file_name")]
+        # Fetch enough to cover a well-populated DB without choking
+        raw_names = [
+            doc["file_name"]
+            for doc in _col.find({}, {"file_name": 1, "_id": 0}).limit(5000)
+            if doc.get("file_name")
+        ]
         if _s2url and _col2 is not None:
-            sample_names += [d["file_name"] for d in _col2.find({}, {"file_name": 1, "_id": 0}).limit(1500) if d.get("file_name")]
+            raw_names += [
+                d["file_name"]
+                for d in _col2.find({}, {"file_name": 1, "_id": 0}).limit(2000)
+                if d.get("file_name")
+            ]
 
-        if sample_names:
-            def _base_title(fn: str) -> str:
-                fn = re.sub(
-                    r'\b(S\d{1,2}E?\d{0,3}|Season\s*\d+|Episode\s*\d+|\d{3,4}p'
-                    r'|BluRay|BDRip|WEBRip|WEB-DL|HDRip|DVDRip|HEVC|x264|x265'
-                    r'|AAC|DDP5?\.?\d?|FLAC|MP3|AC3|ESub|Hindi|Tamil|Telugu'
-                    r'|Malayalam|English|Dual|Multi)\b.*',
-                    '', fn, flags=re.IGNORECASE
-                )
-                return re.sub(r'[._\-]+', ' ', fn).strip().lower()
+        # Build deduplicated map: base_title_lower → original_base_title
+        base_map: dict[str, str] = {}
+        for fn in raw_names:
+            b = _base_title(fn)
+            if b and b not in base_map:
+                base_map[b] = b  # keep lowercase version for matching
 
-            base_to_raw = {}
-            for fn in sample_names:
-                b = _base_title(fn)
-                if b and b not in base_to_raw:
-                    base_to_raw[b] = fn
+        db_titles = list(base_map.keys())
 
-            db_titles = list(base_to_raw.keys())
-            ranked_db = fuzz_process.extract(query_lower, db_titles, limit=10)
-            for base_title, score in ranked_db:
-                if score < 65:
+        if db_titles:
+            # Primary scorer: token_set_ratio — best for word-order and extra/missing words
+            # Extract top candidates quickly
+            top = fuzz_process.extract(
+                query_lower,
+                db_titles,
+                scorer=fuzz_scorer.token_set_ratio,
+                limit=15,
+            )
+
+            for candidate, score in top:
+                if score < 70:
+                    break  # sorted descending, no point continuing
+                # Secondary confirmation with partial_ratio to avoid false positives
+                # e.g. "you" shouldn't match "you are the one"
+                pr = fuzz_scorer.partial_ratio(query_lower, candidate)
+                r  = fuzz_scorer.ratio(query_lower, candidate)
+                # Require at least one of these to be good
+                if max(pr, r) < 55:
                     continue
-                refined = max(
-                    fuzz_scorer.token_set_ratio(query_lower, base_title),
-                    fuzz_scorer.partial_ratio(query_lower, base_title),
-                )
-                if refined < 65:
-                    continue
-                files, _, _ = await get_search_results(base_title)
+                # Search DB with this corrected title
+                files, _, _ = await get_search_results(candidate)
                 if files:
-                    logger.info("ai_spell_check[DB]: '%s' → '%s' (score=%d)", wrong_name, base_title, score)
-                    return base_title
+                    logger.info(
+                        "ai_spell_check[DB]: '%s' → '%s' (token_set=%d, partial=%d)",
+                        wrong_name, candidate, score, pr
+                    )
+                    return candidate
+
     except Exception as exc:
-        logger.debug("ai_spell_check DB fuzzy fallback error: %s", exc)
+        logger.debug("ai_spell_check DB stage error: %s", exc)
+
+    # ── Stage 2: TMDB fallback (single call, no variants) ────────────────────
+    try:
+        candidates = await _tmdb_title_candidates(raw)
+        if candidates:
+            # Score all candidates and pick best DB hit
+            scored = sorted(
+                [(t, max(
+                    fuzz_scorer.token_set_ratio(query_lower, t.lower()),
+                    fuzz_scorer.ratio(query_lower, t.lower()),
+                )) for t in candidates],
+                key=lambda x: -x[1]
+            )
+            for title, score in scored:
+                if score < 55:
+                    break
+                for st in list(dict.fromkeys([title, _strip_year(title)])):
+                    files, _, _ = await get_search_results(st)
+                    if files:
+                        logger.info(
+                            "ai_spell_check[TMDB]: '%s' → '%s' (score=%d)",
+                            wrong_name, st, score
+                        )
+                        return st
+    except Exception as exc:
+        logger.debug("ai_spell_check TMDB stage error: %s", exc)
 
     return None
 
@@ -1899,129 +1891,136 @@ async def auto_filter(client, msg, spoll=False):
 
 async def show_suggestions(bot, message, query):
     """
-    Show suggestion buttons when no files found.
-    Sources: TMDB + IMDB + OMDB (internet) and direct DB fuzzy match.
-    Each button is labelled:
-      ✅ <title>  — file exists in DB
-      🔍 <title>  — not in DB (from internet), clicking triggers auto-request
+    Show suggestion buttons sourced from TMDB + OMDB (internet only).
+    Buttons indicate whether the title is likely in DB based on a single
+    bulk fuzzy check, not per-title DB queries.
+
+    Clicking a suggestion re-triggers auto_filter; if still not found
+    it falls through to trigger_auto_request (existing behaviour).
     """
+    import aiohttp, socket, asyncio as _asyncio
     from fuzzywuzzy import fuzz as fuzz_scorer
-    from fuzzywuzzy import process as fuzz_process
-    import aiohttp, socket
 
     q_lower = query.lower()
 
-    async def _check_in_db(title: str) -> bool:
-        """Return True if we have at least one file for this title."""
-        files, _, total = await get_search_results(title)
-        return total > 0
-
-    # ── 1. Collect candidates from TMDB ──────────────────────────────────────
-    tmdb_candidates = await _tmdb_title_candidates(query)
-
-    # ── 2. Collect candidates from OMDB ──────────────────────────────────────
-    omdb_candidates = []
-    try:
-        from info import OMDB_API_KEY
-        if OMDB_API_KEY:
-            connector = aiohttp.TCPConnector(family=socket.AF_INET)
-            timeout = aiohttp.ClientTimeout(total=6)
-            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-                params = {"apikey": OMDB_API_KEY, "s": query, "type": "movie"}
-                async with session.get("http://www.omdbapi.com/", params=params) as r:
+    # ── Fetch TMDB + OMDB concurrently ────────────────────────────────────────
+    async def _fetch_omdb(session, q: str) -> list[str]:
+        results = []
+        try:
+            from info import OMDB_API_KEY
+            if not OMDB_API_KEY:
+                return results
+            for mtype in ("movie", "series"):
+                params = {"apikey": OMDB_API_KEY, "s": q, "type": mtype}
+                async with session.get(
+                    "http://www.omdbapi.com/", params=params,
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as r:
                     if r.status == 200:
                         data = await r.json()
-                        for item in (data.get("Search") or [])[:6]:
+                        for item in (data.get("Search") or [])[:5]:
                             t = item.get("Title")
                             if t:
-                                omdb_candidates.append(t)
-                # Also search TV
-                params["type"] = "series"
-                async with session.get("http://www.omdbapi.com/", params=params) as r:
-                    if r.status == 200:
-                        data = await r.json()
-                        for item in (data.get("Search") or [])[:4]:
-                            t = item.get("Title")
-                            if t:
-                                omdb_candidates.append(t)
-    except Exception as exc:
-        logger.debug("show_suggestions OMDB error: %s", exc)
+                                results.append(t)
+        except Exception as exc:
+            logger.debug("show_suggestions OMDB error: %s", exc)
+        return results
 
-    # ── 3. Collect candidates from IMDB via Cinemagoer ───────────────────────
-    imdb_candidates = []
-    try:
-        imdb_results = imdb.search_movie(query, results=6)
-        if imdb_results:
-            imdb_candidates = [r.get('title') for r in imdb_results if r.get('title')]
-    except Exception as exc:
-        logger.debug("show_suggestions IMDB error: %s", exc)
+    connector = aiohttp.TCPConnector(family=socket.AF_INET)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tmdb_task = _asyncio.create_task(_tmdb_title_candidates(query))
+        omdb_task = _asyncio.create_task(_fetch_omdb(session, query))
+        tmdb_res, omdb_res = await _asyncio.gather(tmdb_task, omdb_task, return_exceptions=True)
 
-    # ── 4. Merge all internet candidates, deduplicate, score by similarity ────
-    all_internet = []
-    seen = set()
-    for t in (tmdb_candidates + omdb_candidates + imdb_candidates):
+    tmdb_candidates = tmdb_res if isinstance(tmdb_res, list) else []
+    omdb_candidates = omdb_res if isinstance(omdb_res, list) else []
+
+    # ── Merge, deduplicate, rank by similarity ────────────────────────────────
+    seen: set[str] = set()
+    all_titles: list[tuple[str, int]] = []
+    for t in (tmdb_candidates + omdb_candidates):
         k = t.lower()
         if k not in seen:
             seen.add(k)
             score = max(
-                fuzz_scorer.ratio(q_lower, k),
-                fuzz_scorer.partial_ratio(q_lower, k),
                 fuzz_scorer.token_set_ratio(q_lower, k),
+                fuzz_scorer.partial_ratio(q_lower, k),
+                fuzz_scorer.ratio(q_lower, k),
             )
-            all_internet.append((t, score))
+            all_titles.append((t, score))
 
-    all_internet.sort(key=lambda x: -x[1])
-    internet_titles = [t for t, s in all_internet if s >= 35][:MAX_SUGGESTIONS]
+    all_titles.sort(key=lambda x: -x[1])
+    final_titles = [t for t, s in all_titles if s >= 30][:MAX_SUGGESTIONS]
 
-    # ── 5. If internet returned nothing, fall back to DB fuzzy ───────────────
-    db_fallback_titles = []
-    if not internet_titles:
-        try:
-            from database.ia_filterdb import collection, SECOND_FILES_DATABASE_URL, second_collection
-            sample_cursor = collection.find({}, {"file_name": 1, "_id": 0}).limit(2000)
-            sample_names = [doc["file_name"] for doc in sample_cursor if doc.get("file_name")]
-            if SECOND_FILES_DATABASE_URL and second_collection is not None:
-                s2 = list(second_collection.find({}, {"file_name": 1, "_id": 0}).limit(1000))
-                sample_names += [d["file_name"] for d in s2 if d.get("file_name")]
-            def _base(fn):
-                fn = re.sub(r'\b(S\d{1,2}E?\d{0,3}|Season\s*\d+|\d{3,4}p|BluRay|WEBRip|WEB-DL|HDRip|HEVC|x264|x265|AAC|DDP5?\.?\d?)\\b.*', '', fn, flags=re.IGNORECASE)
-                return re.sub(r'[._\-]+', ' ', fn).strip()
-            bases = list({_base(n).lower(): _base(n) for n in sample_names if _base(n)}.values())
-            ranked = fuzz_process.extract(query, bases, limit=MAX_SUGGESTIONS)
-            db_fallback_titles = [t for t, score in ranked if score >= 50]
-        except Exception as exc:
-            logger.debug("show_suggestions DB fallback error: %s", exc)
+    # ── Build DB presence map in one bulk fuzzy pass (no per-title DB calls) ──
+    # Load DB base titles once and do a fast set-membership check
+    db_base_set: set[str] = set()
+    try:
+        from database.ia_filterdb import collection as _col, second_collection as _col2, SECOND_FILES_DATABASE_URL as _s2url
+        _JUNK = re.compile(
+            r'\b(S\d{1,2}E?\d{0,3}|Season\s*\d+|\d{3,4}p|BluRay|BDRip|WEBRip'
+            r'|WEB-DL|HDRip|DVDRip|HEVC|x264|x265|AAC|DDP5?\.?\d?|Hindi'
+            r'|Tamil|Telugu|Malayalam|English|Dual|Multi)\b.*',
+            re.IGNORECASE
+        )
+        def _bt(fn):
+            fn = _JUNK.sub('', fn)
+            return re.sub(r'[._\-\+\[\]()]+', ' ', fn).strip().lower()
+        for doc in _col.find({}, {"file_name": 1, "_id": 0}).limit(5000):
+            b = _bt(doc.get("file_name", ""))
+            if b:
+                db_base_set.add(b)
+        if _s2url and _col2 is not None:
+            for doc in _col2.find({}, {"file_name": 1, "_id": 0}).limit(2000):
+                b = _bt(doc.get("file_name", ""))
+                if b:
+                    db_base_set.add(b)
+    except Exception as exc:
+        logger.debug("show_suggestions DB load error: %s", exc)
 
-    final_titles = internet_titles or db_fallback_titles
+    def _in_db(title: str) -> bool:
+        tl = re.sub(r'\s*\(\d{4}\)\s*$', '', title).strip().lower()
+        if tl in db_base_set:
+            return True
+        # Fuzzy check with tight threshold
+        return any(
+            fuzz_scorer.token_set_ratio(tl, b) >= 90
+            for b in db_base_set
+        )
 
-    # ── 6. Build buttons with DB availability indicators ─────────────────────
+    # ── Build inline buttons ──────────────────────────────────────────────────
     buttons = []
     for t in final_titles:
-        in_db = await _check_in_db(t)
-        icon = "✅" if in_db else "🔍"
+        icon = "✅" if _in_db(t) else "🔍"
         label = f"{icon} {t}"
-        # Truncate label to fit Telegram button limit (64 bytes callback data)
-        safe_title = t[:50] if len(t) > 50 else t
-        buttons.append([InlineKeyboardButton(text=label, callback_data=f"spelling#{safe_title}")])
+        safe_t = t[:50] if len(t) > 50 else t
+        buttons.append([InlineKeyboardButton(text=label, callback_data=f"spelling#{safe_t}")])
 
-    buttons.append([
-        InlineKeyboardButton(
-            "🔍 ᴄʜᴇᴄᴋ ᴏɴ ɢᴏᴏɢʟᴇ 🔍",
-            url=f"https://www.google.com/search?q={query.replace(' ', '+')}"
-        )
-    ])
-    buttons.append([
-        InlineKeyboardButton(
-            "📮 ʀᴇǫᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ 📮",
-            callback_data=f"req_admin#{query}#{message.from_user.id}"
-        )
-    ])
+    if not buttons:
+        # Nothing from internet either — just give google + request
+        google = query.replace(' ', '+')
+        buttons = [
+            [InlineKeyboardButton("🔍 ꜱᴇᴀʀᴄʜ ᴏɴ ɢᴏᴏɢʟᴇ 🔍", url=f"https://www.google.com/search?q={google}")],
+            [InlineKeyboardButton("📮 ʀᴇǫᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ 📮", callback_data=f"req_admin#{query}#{message.from_user.id}")],
+        ]
+    else:
+        buttons.append([
+            InlineKeyboardButton(
+                "🔍 ꜱᴇᴀʀᴄʜ ᴏɴ ɢᴏᴏɢʟᴇ 🔍",
+                url=f"https://www.google.com/search?q={query.replace(' ', '+')}"
+            )
+        ])
+        buttons.append([
+            InlineKeyboardButton(
+                "📮 ʀᴇǫᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ 📮",
+                callback_data=f"req_admin#{query}#{message.from_user.id}"
+            )
+        ])
 
-    legend = "\n\n<b>✅ = Available in DB  |  🔍 = Not in DB (tap to request)</b>"
     text = (
         f"<b>😕 No results found for: <code>{query}</code></b>\n\n"
-        f"<b>🔎 Did you mean one of these?</b>"
-        f"{legend}"
+        f"<b>🔎 Did you mean one of these?</b>\n"
+        f"<b>✅</b> = Available in DB  |  <b>🔍</b> = Not in DB (tap to request)"
     )
     sent = await message.reply_text(
         text,
@@ -3643,142 +3642,134 @@ async def _tmdb_title_candidates(query: str) -> list[str]:
 
 async def ai_spell_check(wrong_name: str) -> str | None:
     """
-    Enhanced spell-check using a three-stage approach:
+    Fast two-stage spell correction focused on DB-first matching.
 
-      Stage 1 – TMDB (movie + TV) with variant generation:
-        Handles missing letters, wrong letters, missing/extra spaces.
-        e.g. "ionman" → "Iron Man", "braking bed" → "Breaking Bad"
+    Stage 1 – DB fuzzy match (fast, no network):
+      Loads base titles from DB and uses fuzzywuzzy token_set_ratio to find
+      the closest match. Handles the most common user mistakes:
+        • Missing letters      : "ionman"      → "Iron Man"
+        • Extra letters        : "ironmann"     → "Iron Man"
+        • Wrong letter         : "braking bad"  → "Breaking Bad"
+        • Missing space        : "breakingbad"  → "Breaking Bad"
+        • Extra space          : "iron  man"    → "Iron Man"
+        • Wrong position       : "bad breaking" → "Breaking Bad"
+        • Mixed mistakes       : "dhuranhar"    → "Dhurandhar"
 
-      Stage 2 – IMDB via Cinemagoer:
-        Extra fallback for regional/niche titles.
+    Stage 2 – TMDB fallback (network, only if DB stage fails):
+      For typos that are too severe for fuzzy DB matching (e.g. the title
+      doesn't exist in DB at all), we ask TMDB once with the raw query.
 
-      Stage 3 – Direct DB fuzzy match:
-        Final fallback for content not on public databases.
-
-    Returns the corrected search string that yields DB results, or None.
+    Returns corrected title string that has DB results, or None.
     """
-    from fuzzywuzzy import process as fuzz_process
     from fuzzywuzzy import fuzz as fuzz_scorer
+    from fuzzywuzzy import process as fuzz_process
 
     raw = wrong_name.strip()
+    if not raw:
+        return None
     query_lower = raw.lower()
 
     def _strip_year(t: str) -> str:
-        import re as _re
-        return _re.sub(r'\s*\(\d{4}\)\s*$', '', t).strip()
+        return re.sub(r'\s*\(\d{4}\)\s*$', '', t).strip()
 
-    def _query_variants(q: str) -> list:
-        """Generate plausible variants of a misspelled query to widen TMDB hits."""
-        import re as _re
-        variants = [q]
-        # CamelCase split: "IronMan" → "Iron Man"
-        spaced = _re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', q)
-        if spaced != q:
-            variants.append(spaced)
-        # Merge all spaces: "iron man" → "ironman"
-        merged = q.replace(' ', '')
-        if merged != q and merged not in variants:
-            variants.append(merged)
-        # If no spaces, try inserting one at each position
-        if ' ' not in q and len(q) >= 4:
-            for i in range(2, len(q) - 1):
-                v = q[:i] + ' ' + q[i:]
-                if v not in variants:
-                    variants.append(v)
-        return list(dict.fromkeys(variants))
-
-    def _best_score(title: str) -> int:
-        tl = title.lower()
-        return max(
-            fuzz_scorer.ratio(query_lower, tl),
-            fuzz_scorer.partial_ratio(query_lower, tl),
-            fuzz_scorer.token_set_ratio(query_lower, tl),
+    def _base_title(fn: str) -> str:
+        """Strip technical tags, keep only the clean title."""
+        fn = re.sub(
+            r'\b(S\d{1,2}E?\d{0,3}|Season\s*\d+|Episode\s*\d+|\d{3,4}p'
+            r'|BluRay|BDRip|Remux|WEBRip|WEB-DL|HDRip|DVDRip|CAM|TS'
+            r'|HEVC|x264|x265|AVC|AV1|AAC|DDP5?\.?\d?|FLAC|MP3|AC3|DTS'
+            r'|ESub|Subs?|Hindi|Tamil|Telugu|Malayalam|Kannada|Punjabi'
+            r'|English|Dual|Multi|HQ|HD|UHD|SDR|HDR|Dolby)\b.*',
+            '', fn, flags=re.IGNORECASE
         )
+        fn = re.sub(r'[._\-\+\[\]()]+', ' ', fn)
+        fn = re.sub(r'\s{2,}', ' ', fn)
+        return fn.strip().lower()
 
-    # ── Stage 1: TMDB ─────────────────────────────────────────────────────────
-    all_tmdb_candidates = []
-    seen_cands = set()
-    for variant in _query_variants(raw):
-        cands = await _tmdb_title_candidates(variant)
-        for c in cands:
-            if c.lower() not in seen_cands:
-                seen_cands.add(c.lower())
-                all_tmdb_candidates.append(c)
-
-    if all_tmdb_candidates:
-        scored = sorted([(t, _best_score(t)) for t in all_tmdb_candidates], key=lambda x: -x[1])
-        for title, score in scored:
-            if score < 50:
-                continue
-            for search_title in list(dict.fromkeys([title, _strip_year(title)])):
-                files, _, _ = await get_search_results(search_title)
-                if files:
-                    logger.info("ai_spell_check[TMDB]: '%s' → '%s' (score=%d)", wrong_name, search_title, score)
-                    return search_title
-
-    # ── Stage 2: IMDB via Cinemagoer ─────────────────────────────────────────
-    try:
-        imdb_results = imdb.search_movie(query_lower, results=8)
-        if imdb_results:
-            imdb_titles = [r.get('title') for r in imdb_results if r.get('title')]
-            for title in imdb_titles:
-                score = max(
-                    fuzz_scorer.ratio(query_lower, title.lower()),
-                    fuzz_scorer.partial_ratio(query_lower, title.lower()),
-                    fuzz_scorer.token_set_ratio(query_lower, title.lower()),
-                )
-                if score < 50:
-                    continue
-                for search_title in list(dict.fromkeys([title, _strip_year(title)])):
-                    files, _, _ = await get_search_results(search_title)
-                    if files:
-                        logger.info("ai_spell_check[IMDB]: '%s' → '%s' (score=%d)", wrong_name, search_title, score)
-                        return search_title
-    except Exception as exc:
-        logger.debug("ai_spell_check IMDB stage error: %s", exc)
-
-    # ── Stage 3: Direct DB fuzzy fallback ────────────────────────────────────
+    # ── Stage 1: DB fuzzy match ───────────────────────────────────────────────
+    # Pull distinct base titles from DB (cheap projection query)
     try:
         from database.ia_filterdb import collection as _col, second_collection as _col2, SECOND_FILES_DATABASE_URL as _s2url
 
-        sample_names = [doc["file_name"] for doc in _col.find({}, {"file_name": 1, "_id": 0}).limit(3000) if doc.get("file_name")]
+        # Fetch enough to cover a well-populated DB without choking
+        raw_names = [
+            doc["file_name"]
+            for doc in _col.find({}, {"file_name": 1, "_id": 0}).limit(5000)
+            if doc.get("file_name")
+        ]
         if _s2url and _col2 is not None:
-            sample_names += [d["file_name"] for d in _col2.find({}, {"file_name": 1, "_id": 0}).limit(1500) if d.get("file_name")]
+            raw_names += [
+                d["file_name"]
+                for d in _col2.find({}, {"file_name": 1, "_id": 0}).limit(2000)
+                if d.get("file_name")
+            ]
 
-        if sample_names:
-            def _base_title(fn: str) -> str:
-                fn = re.sub(
-                    r'\b(S\d{1,2}E?\d{0,3}|Season\s*\d+|Episode\s*\d+|\d{3,4}p'
-                    r'|BluRay|BDRip|WEBRip|WEB-DL|HDRip|DVDRip|HEVC|x264|x265'
-                    r'|AAC|DDP5?\.?\d?|FLAC|MP3|AC3|ESub|Hindi|Tamil|Telugu'
-                    r'|Malayalam|English|Dual|Multi)\b.*',
-                    '', fn, flags=re.IGNORECASE
-                )
-                return re.sub(r'[._\-]+', ' ', fn).strip().lower()
+        # Build deduplicated map: base_title_lower → original_base_title
+        base_map: dict[str, str] = {}
+        for fn in raw_names:
+            b = _base_title(fn)
+            if b and b not in base_map:
+                base_map[b] = b  # keep lowercase version for matching
 
-            base_to_raw = {}
-            for fn in sample_names:
-                b = _base_title(fn)
-                if b and b not in base_to_raw:
-                    base_to_raw[b] = fn
+        db_titles = list(base_map.keys())
 
-            db_titles = list(base_to_raw.keys())
-            ranked_db = fuzz_process.extract(query_lower, db_titles, limit=10)
-            for base_title, score in ranked_db:
-                if score < 65:
+        if db_titles:
+            # Primary scorer: token_set_ratio — best for word-order and extra/missing words
+            # Extract top candidates quickly
+            top = fuzz_process.extract(
+                query_lower,
+                db_titles,
+                scorer=fuzz_scorer.token_set_ratio,
+                limit=15,
+            )
+
+            for candidate, score in top:
+                if score < 70:
+                    break  # sorted descending, no point continuing
+                # Secondary confirmation with partial_ratio to avoid false positives
+                # e.g. "you" shouldn't match "you are the one"
+                pr = fuzz_scorer.partial_ratio(query_lower, candidate)
+                r  = fuzz_scorer.ratio(query_lower, candidate)
+                # Require at least one of these to be good
+                if max(pr, r) < 55:
                     continue
-                refined = max(
-                    fuzz_scorer.token_set_ratio(query_lower, base_title),
-                    fuzz_scorer.partial_ratio(query_lower, base_title),
-                )
-                if refined < 65:
-                    continue
-                files, _, _ = await get_search_results(base_title)
+                # Search DB with this corrected title
+                files, _, _ = await get_search_results(candidate)
                 if files:
-                    logger.info("ai_spell_check[DB]: '%s' → '%s' (score=%d)", wrong_name, base_title, score)
-                    return base_title
+                    logger.info(
+                        "ai_spell_check[DB]: '%s' → '%s' (token_set=%d, partial=%d)",
+                        wrong_name, candidate, score, pr
+                    )
+                    return candidate
+
     except Exception as exc:
-        logger.debug("ai_spell_check DB fuzzy fallback error: %s", exc)
+        logger.debug("ai_spell_check DB stage error: %s", exc)
+
+    # ── Stage 2: TMDB fallback (single call, no variants) ────────────────────
+    try:
+        candidates = await _tmdb_title_candidates(raw)
+        if candidates:
+            # Score all candidates and pick best DB hit
+            scored = sorted(
+                [(t, max(
+                    fuzz_scorer.token_set_ratio(query_lower, t.lower()),
+                    fuzz_scorer.ratio(query_lower, t.lower()),
+                )) for t in candidates],
+                key=lambda x: -x[1]
+            )
+            for title, score in scored:
+                if score < 55:
+                    break
+                for st in list(dict.fromkeys([title, _strip_year(title)])):
+                    files, _, _ = await get_search_results(st)
+                    if files:
+                        logger.info(
+                            "ai_spell_check[TMDB]: '%s' → '%s' (score=%d)",
+                            wrong_name, st, score
+                        )
+                        return st
+    except Exception as exc:
+        logger.debug("ai_spell_check TMDB stage error: %s", exc)
 
     return None
 
@@ -3975,129 +3966,136 @@ async def auto_filter(client, msg, spoll=False):
 
 async def show_suggestions(bot, message, query):
     """
-    Show suggestion buttons when no files found.
-    Sources: TMDB + IMDB + OMDB (internet) and direct DB fuzzy match.
-    Each button is labelled:
-      ✅ <title>  — file exists in DB
-      🔍 <title>  — not in DB (from internet), clicking triggers auto-request
+    Show suggestion buttons sourced from TMDB + OMDB (internet only).
+    Buttons indicate whether the title is likely in DB based on a single
+    bulk fuzzy check, not per-title DB queries.
+
+    Clicking a suggestion re-triggers auto_filter; if still not found
+    it falls through to trigger_auto_request (existing behaviour).
     """
+    import aiohttp, socket, asyncio as _asyncio
     from fuzzywuzzy import fuzz as fuzz_scorer
-    from fuzzywuzzy import process as fuzz_process
-    import aiohttp, socket
 
     q_lower = query.lower()
 
-    async def _check_in_db(title: str) -> bool:
-        """Return True if we have at least one file for this title."""
-        files, _, total = await get_search_results(title)
-        return total > 0
-
-    # ── 1. Collect candidates from TMDB ──────────────────────────────────────
-    tmdb_candidates = await _tmdb_title_candidates(query)
-
-    # ── 2. Collect candidates from OMDB ──────────────────────────────────────
-    omdb_candidates = []
-    try:
-        from info import OMDB_API_KEY
-        if OMDB_API_KEY:
-            connector = aiohttp.TCPConnector(family=socket.AF_INET)
-            timeout = aiohttp.ClientTimeout(total=6)
-            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-                params = {"apikey": OMDB_API_KEY, "s": query, "type": "movie"}
-                async with session.get("http://www.omdbapi.com/", params=params) as r:
+    # ── Fetch TMDB + OMDB concurrently ────────────────────────────────────────
+    async def _fetch_omdb(session, q: str) -> list[str]:
+        results = []
+        try:
+            from info import OMDB_API_KEY
+            if not OMDB_API_KEY:
+                return results
+            for mtype in ("movie", "series"):
+                params = {"apikey": OMDB_API_KEY, "s": q, "type": mtype}
+                async with session.get(
+                    "http://www.omdbapi.com/", params=params,
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as r:
                     if r.status == 200:
                         data = await r.json()
-                        for item in (data.get("Search") or [])[:6]:
+                        for item in (data.get("Search") or [])[:5]:
                             t = item.get("Title")
                             if t:
-                                omdb_candidates.append(t)
-                # Also search TV
-                params["type"] = "series"
-                async with session.get("http://www.omdbapi.com/", params=params) as r:
-                    if r.status == 200:
-                        data = await r.json()
-                        for item in (data.get("Search") or [])[:4]:
-                            t = item.get("Title")
-                            if t:
-                                omdb_candidates.append(t)
-    except Exception as exc:
-        logger.debug("show_suggestions OMDB error: %s", exc)
+                                results.append(t)
+        except Exception as exc:
+            logger.debug("show_suggestions OMDB error: %s", exc)
+        return results
 
-    # ── 3. Collect candidates from IMDB via Cinemagoer ───────────────────────
-    imdb_candidates = []
-    try:
-        imdb_results = imdb.search_movie(query, results=6)
-        if imdb_results:
-            imdb_candidates = [r.get('title') for r in imdb_results if r.get('title')]
-    except Exception as exc:
-        logger.debug("show_suggestions IMDB error: %s", exc)
+    connector = aiohttp.TCPConnector(family=socket.AF_INET)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tmdb_task = _asyncio.create_task(_tmdb_title_candidates(query))
+        omdb_task = _asyncio.create_task(_fetch_omdb(session, query))
+        tmdb_res, omdb_res = await _asyncio.gather(tmdb_task, omdb_task, return_exceptions=True)
 
-    # ── 4. Merge all internet candidates, deduplicate, score by similarity ────
-    all_internet = []
-    seen = set()
-    for t in (tmdb_candidates + omdb_candidates + imdb_candidates):
+    tmdb_candidates = tmdb_res if isinstance(tmdb_res, list) else []
+    omdb_candidates = omdb_res if isinstance(omdb_res, list) else []
+
+    # ── Merge, deduplicate, rank by similarity ────────────────────────────────
+    seen: set[str] = set()
+    all_titles: list[tuple[str, int]] = []
+    for t in (tmdb_candidates + omdb_candidates):
         k = t.lower()
         if k not in seen:
             seen.add(k)
             score = max(
-                fuzz_scorer.ratio(q_lower, k),
-                fuzz_scorer.partial_ratio(q_lower, k),
                 fuzz_scorer.token_set_ratio(q_lower, k),
+                fuzz_scorer.partial_ratio(q_lower, k),
+                fuzz_scorer.ratio(q_lower, k),
             )
-            all_internet.append((t, score))
+            all_titles.append((t, score))
 
-    all_internet.sort(key=lambda x: -x[1])
-    internet_titles = [t for t, s in all_internet if s >= 35][:MAX_SUGGESTIONS]
+    all_titles.sort(key=lambda x: -x[1])
+    final_titles = [t for t, s in all_titles if s >= 30][:MAX_SUGGESTIONS]
 
-    # ── 5. If internet returned nothing, fall back to DB fuzzy ───────────────
-    db_fallback_titles = []
-    if not internet_titles:
-        try:
-            from database.ia_filterdb import collection, SECOND_FILES_DATABASE_URL, second_collection
-            sample_cursor = collection.find({}, {"file_name": 1, "_id": 0}).limit(2000)
-            sample_names = [doc["file_name"] for doc in sample_cursor if doc.get("file_name")]
-            if SECOND_FILES_DATABASE_URL and second_collection is not None:
-                s2 = list(second_collection.find({}, {"file_name": 1, "_id": 0}).limit(1000))
-                sample_names += [d["file_name"] for d in s2 if d.get("file_name")]
-            def _base(fn):
-                fn = re.sub(r'\b(S\d{1,2}E?\d{0,3}|Season\s*\d+|\d{3,4}p|BluRay|WEBRip|WEB-DL|HDRip|HEVC|x264|x265|AAC|DDP5?\.?\d?)\\b.*', '', fn, flags=re.IGNORECASE)
-                return re.sub(r'[._\-]+', ' ', fn).strip()
-            bases = list({_base(n).lower(): _base(n) for n in sample_names if _base(n)}.values())
-            ranked = fuzz_process.extract(query, bases, limit=MAX_SUGGESTIONS)
-            db_fallback_titles = [t for t, score in ranked if score >= 50]
-        except Exception as exc:
-            logger.debug("show_suggestions DB fallback error: %s", exc)
+    # ── Build DB presence map in one bulk fuzzy pass (no per-title DB calls) ──
+    # Load DB base titles once and do a fast set-membership check
+    db_base_set: set[str] = set()
+    try:
+        from database.ia_filterdb import collection as _col, second_collection as _col2, SECOND_FILES_DATABASE_URL as _s2url
+        _JUNK = re.compile(
+            r'\b(S\d{1,2}E?\d{0,3}|Season\s*\d+|\d{3,4}p|BluRay|BDRip|WEBRip'
+            r'|WEB-DL|HDRip|DVDRip|HEVC|x264|x265|AAC|DDP5?\.?\d?|Hindi'
+            r'|Tamil|Telugu|Malayalam|English|Dual|Multi)\b.*',
+            re.IGNORECASE
+        )
+        def _bt(fn):
+            fn = _JUNK.sub('', fn)
+            return re.sub(r'[._\-\+\[\]()]+', ' ', fn).strip().lower()
+        for doc in _col.find({}, {"file_name": 1, "_id": 0}).limit(5000):
+            b = _bt(doc.get("file_name", ""))
+            if b:
+                db_base_set.add(b)
+        if _s2url and _col2 is not None:
+            for doc in _col2.find({}, {"file_name": 1, "_id": 0}).limit(2000):
+                b = _bt(doc.get("file_name", ""))
+                if b:
+                    db_base_set.add(b)
+    except Exception as exc:
+        logger.debug("show_suggestions DB load error: %s", exc)
 
-    final_titles = internet_titles or db_fallback_titles
+    def _in_db(title: str) -> bool:
+        tl = re.sub(r'\s*\(\d{4}\)\s*$', '', title).strip().lower()
+        if tl in db_base_set:
+            return True
+        # Fuzzy check with tight threshold
+        return any(
+            fuzz_scorer.token_set_ratio(tl, b) >= 90
+            for b in db_base_set
+        )
 
-    # ── 6. Build buttons with DB availability indicators ─────────────────────
+    # ── Build inline buttons ──────────────────────────────────────────────────
     buttons = []
     for t in final_titles:
-        in_db = await _check_in_db(t)
-        icon = "✅" if in_db else "🔍"
+        icon = "✅" if _in_db(t) else "🔍"
         label = f"{icon} {t}"
-        # Truncate label to fit Telegram button limit (64 bytes callback data)
-        safe_title = t[:50] if len(t) > 50 else t
-        buttons.append([InlineKeyboardButton(text=label, callback_data=f"spelling#{safe_title}")])
+        safe_t = t[:50] if len(t) > 50 else t
+        buttons.append([InlineKeyboardButton(text=label, callback_data=f"spelling#{safe_t}")])
 
-    buttons.append([
-        InlineKeyboardButton(
-            "🔍 ᴄʜᴇᴄᴋ ᴏɴ ɢᴏᴏɢʟᴇ 🔍",
-            url=f"https://www.google.com/search?q={query.replace(' ', '+')}"
-        )
-    ])
-    buttons.append([
-        InlineKeyboardButton(
-            "📮 ʀᴇǫᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ 📮",
-            callback_data=f"req_admin#{query}#{message.from_user.id}"
-        )
-    ])
+    if not buttons:
+        # Nothing from internet either — just give google + request
+        google = query.replace(' ', '+')
+        buttons = [
+            [InlineKeyboardButton("🔍 ꜱᴇᴀʀᴄʜ ᴏɴ ɢᴏᴏɢʟᴇ 🔍", url=f"https://www.google.com/search?q={google}")],
+            [InlineKeyboardButton("📮 ʀᴇǫᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ 📮", callback_data=f"req_admin#{query}#{message.from_user.id}")],
+        ]
+    else:
+        buttons.append([
+            InlineKeyboardButton(
+                "🔍 ꜱᴇᴀʀᴄʜ ᴏɴ ɢᴏᴏɢʟᴇ 🔍",
+                url=f"https://www.google.com/search?q={query.replace(' ', '+')}"
+            )
+        ])
+        buttons.append([
+            InlineKeyboardButton(
+                "📮 ʀᴇǫᴜᴇsᴛ ᴛᴏ ᴀᴅᴍɪɴ 📮",
+                callback_data=f"req_admin#{query}#{message.from_user.id}"
+            )
+        ])
 
-    legend = "\n\n<b>✅ = Available in DB  |  🔍 = Not in DB (tap to request)</b>"
     text = (
         f"<b>😕 No results found for: <code>{query}</code></b>\n\n"
-        f"<b>🔎 Did you mean one of these?</b>"
-        f"{legend}"
+        f"<b>🔎 Did you mean one of these?</b>\n"
+        f"<b>✅</b> = Available in DB  |  <b>🔍</b> = Not in DB (tap to request)"
     )
     sent = await message.reply_text(
         text,
@@ -4110,7 +4108,6 @@ async def show_suggestions(bot, message, query):
         "user": message.from_user,
     }
     asyncio.create_task(suggestion_timeout_handler(bot, sent))
-
 
 
 async def suggestion_timeout_handler(bot, msg):
