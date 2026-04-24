@@ -55,8 +55,8 @@ def get_secondary_db_storage():
 
 async def save_file(media):
     file_id = unpack_new_file_id(media.file_id)
-    file_name = re.sub(r"@\w+|(_|\-|\.|\+)", " ", str(media.file_name))
-    file_caption = re.sub(r"@\w+|(_|\-|\.|\+)", " ", str(media.caption))
+    file_name = re.sub(r"@\w+|(_|\-|\.|\\+)", " ", str(media.file_name))
+    file_caption = re.sub(r"@\w+|(_|\-|\.|\\+)", " ", str(media.caption))
     
     # Auto-classify using TMDB metadata (async, best-effort)
     category = await _classify_file(file_name, file_caption)
@@ -260,6 +260,171 @@ def clean_query(query, filter_words):
         query = re.sub(pattern, '', query, flags=re.IGNORECASE)
     return ' '.join(query.split()).strip()
 
+
+# ── Resolution rank for secondary sorting within same quality tier ────────────
+RESOLUTION_RANK = {
+    "2160p": 200, "4k": 200,
+    "1080p": 150,
+    "720p": 100,
+    "480p": 50,
+    "360p": 20,
+}
+
+QUALITY_RANK = {
+    "bluray": 100,
+    "bdrip": 95,
+    "remux": 98,
+    "web-dl": 90,
+    "webdl": 90,
+    "webrip": 85,
+    "hdrip": 75,
+    "hd": 70,
+    "dvdrip": 65,
+    "cam": 10,
+    "ts": 15
+}
+
+
+def extract_year(text: str):
+    m = re.findall(r"(19\d{2}|20\d{2})", text)
+    return max(map(int, m)) if m else 0
+
+
+def extract_season_episode(text: str):
+    season = episode = 0
+    sm = re.search(r"s(\d{1,2})", text, re.I)
+    em = re.search(r"e(\d{1,2})", text, re.I)
+    if sm:
+        season = int(sm.group(1))
+    if em:
+        episode = int(em.group(1))
+    return season, episode
+
+
+def extract_quality(text: str):
+    t = text.lower()
+    for q, score in QUALITY_RANK.items():
+        if q in t:
+            return score
+    return 0
+
+
+def extract_resolution(text: str) -> int:
+    t = text.lower()
+    for res, score in RESOLUTION_RANK.items():
+        if res in t:
+            return score
+    return 0
+
+
+def has_multi_audio(text: str):
+    t = text.lower()
+    return any(x in t for x in ["dual", "multi", "multi-audio", "dual-audio"])
+
+
+def normalize_title(text: str) -> str:
+    """Strip technical tags and return clean lowercase title for comparison."""
+    text = text.lower()
+    # Remove year
+    text = re.sub(r"(19\d{2}|20\d{2})", "", text)
+    # Remove S01E01, S01
+    text = re.sub(r"s\d{1,2}e\d{1,2}", "", text)
+    text = re.sub(r"s\d{1,2}", "", text)
+    # Remove quality/codec tags
+    text = re.sub(
+        r"\b(480p|720p|1080p|2160p|4k|hdr|bluray|bdrip|remux|web[\-\s]?dl|webrip|"
+        r"hdrip|dvdrip|cam|ts|x264|x265|hevc|aac|ac3|dts|flac|mp3|ddp5|"
+        r"hindi|english|tamil|telugu|malayalam|kannada|punjabi|"
+        r"dual|multi|esub|subbed|dubbed)\b", "", text
+    )
+    return re.sub(r"[^a-z0-9 ]", "", text).strip()
+
+
+def _title_words(text: str) -> list:
+    """Return list of significant words from a normalized title."""
+    return [w for w in normalize_title(text).split() if w]
+
+
+def _word_match_score(query_words: list, file_text: str) -> int:
+    """
+    Word-based exact match scoring.
+    - All query words present in file → high score
+    - Score = (matched_words / total_query_words) * 1000
+    - Bonus if words appear consecutively / as prefix
+    Returns 0–1000.
+    """
+    if not query_words:
+        return 0
+    file_words = _title_words(file_text)
+    if not file_words:
+        return 0
+
+    matched = sum(1 for w in query_words if w in file_words)
+    base = int((matched / len(query_words)) * 1000)
+
+    # Extra bonus: all words matched
+    if matched == len(query_words):
+        base += 200
+
+    # Extra bonus: query words appear as a contiguous block at start of file title
+    file_str = " ".join(file_words)
+    query_str = " ".join(query_words)
+    if file_str.startswith(query_str):
+        base += 300
+    elif query_str in file_str:
+        base += 100
+
+    return base
+
+
+def rank_results(query: str, files: list) -> list:
+    """
+    Rank search results so that:
+    1. Exact/best title match is on top (word-based, not character-based)
+    2. Among same title — higher quality print first (Bluray > WEB-DL > WEBRip …)
+    3. Among same quality — higher resolution first (2160p > 1080p > 720p …)
+    4. Tiebreak: newer year > multi-audio > episode order
+    """
+    q_words = _title_words(query)
+    q_norm = normalize_title(query)
+
+    def score(f):
+        text = f.get("caption") or f.get("file_name", "")
+        t_norm = normalize_title(text)
+
+        # ── Tier 1: Title match (word-based) ─────────────────────────────────
+        word_score = _word_match_score(q_words, text)
+
+        # Hard exact match bonus (full normalized title equality)
+        exact_bonus = 2000 if t_norm == q_norm else 0
+
+        # ── Tier 2: Quality ───────────────────────────────────────────────────
+        quality = extract_quality(text)          # 0–100
+
+        # ── Tier 3: Resolution ────────────────────────────────────────────────
+        resolution = extract_resolution(text)    # 0–200
+
+        # ── Tier 4: Tiebreakers ───────────────────────────────────────────────
+        year = extract_year(text) * 2
+        audio = 50 if has_multi_audio(text) else 0
+        season, episode = extract_season_episode(text)
+        season_score = season * 10
+        episode_score = -episode          # lower episode number first within same title
+
+        return (
+            exact_bonus
+            + word_score
+            + quality * 10        # scale quality so it's secondary to title match
+            + resolution * 5      # scale resolution so it's tertiary
+            + year
+            + audio
+            + season_score
+            + episode_score
+        )
+
+    return sorted(files, key=score, reverse=True)
+
+
 async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
     query = str(query).strip()
     query = normalize_query(query)          # ← season/episode normalization
@@ -268,13 +433,25 @@ async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
     if not query:
         raw_pattern = '.'
     elif ' ' not in query:
-        raw_pattern = r'(\b|[\.\+\-_])' + query + r'(\b|[\.\+\-_])'
+        # Single word: word-boundary match so "you" doesn't match "your" etc.
+        raw_pattern = r'(\b|[\.+\-_])' + re.escape(query) + r'(\b|[\.+\-_])'
     else:
-        raw_pattern = query.replace(' ', r'.*[\s\.\+\-_]')
+        # Multi-word: each word must appear (word-boundary aware, order flexible)
+        words = query.split()
+        # Build pattern: all words must be present anywhere in the filename
+        # We use a lookahead-based approach for word-order-independent matching
+        lookaheads = ''.join(
+            r'(?=.*\b' + re.escape(w) + r'\b)' for w in words
+        )
+        raw_pattern = lookaheads + '.*'
     try:
         regex = re.compile(raw_pattern, flags=re.IGNORECASE)
-    except:
-        regex = query
+    except Exception:
+        # Fallback to simple contains search
+        try:
+            regex = re.compile(re.escape(query), flags=re.IGNORECASE)
+        except Exception:
+            regex = query
 
     if USE_CAPTION_FILTER:
         filter = {'$or': [{'file_name': regex}, {'caption': regex}]}
@@ -306,77 +483,15 @@ async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
         next_offset = ''
     return files, next_offset, total_results
 
-QUALITY_RANK = {
-    "bluray": 100,
-    "bdrip": 95,
-    "remux": 98,
-    "web-dl": 90,
-    "webdl": 90,
-    "webrip": 85,
-    "hdrip": 75,
-    "hd": 70,
-    "dvdrip": 65,
-    "cam": 10,
-    "ts": 15
-}
-
-def extract_year(text: str):
-    m = re.findall(r"(19\d{2}|20\d{2})", text)
-    return max(map(int, m)) if m else 0
-
-def extract_season_episode(text: str):
-    season = episode = 0
-    sm = re.search(r"s(\d{1,2})", text, re.I)
-    em = re.search(r"e(\d{1,2})", text, re.I)
-    if sm:
-        season = int(sm.group(1))
-    if em:
-        episode = int(em.group(1))
-    return season, episode
-
-def extract_quality(text: str):
-    t = text.lower()
-    for q, score in QUALITY_RANK.items():
-        if q in t:
-            return score
-    return 0
-
-def has_multi_audio(text: str):
-    t = text.lower()
-    return any(x in t for x in ["dual", "multi", "multi-audio", "dual-audio"])
-
-def normalize_title(text: str):
-    text = text.lower()
-    text = re.sub(r"(19\d{2}|20\d{2})", "", text)
-    text = re.sub(r"s\d{1,2}e\d{1,2}", "", text)
-    text = re.sub(r"s\d{1,2}", "", text)
-    return re.sub(r"[^a-z0-9 ]", "", text).strip()
-    
-def rank_results(query, files):
-    q_norm = normalize_title(query)
-    def score(f):
-        text = f.get("caption") or f.get("file_name", "")
-        t_norm = normalize_title(text)
-        exact = 1000 if t_norm == q_norm else 0
-        starts = 300 if t_norm.startswith(q_norm) else 0
-        contains = 150 if q_norm in t_norm else 0
-        year = extract_year(text) * 5
-        quality = extract_quality(text)
-        season, episode = extract_season_episode(text)
-        season_score = season * 50
-        episode_score = -episode
-        audio = 200 if has_multi_audio(text) else 0
-        return exact + starts + contains + year + quality + season_score + episode_score + audio
-    return sorted(files, key=score, reverse=True)
 
 async def delete_files(query):
     query = query.strip()
     if not query:
         raw_pattern = '.'
     elif ' ' not in query:
-        raw_pattern = r'(\b|[\.\+\-_])' + query + r'(\b|[\.\+\-_])'
+        raw_pattern = r'(\b|[\.+\-_])' + query + r'(\b|[\.+\-_])'
     else:
-        raw_pattern = query.replace(' ', r'.*[\s\.\+\-_]')
+        raw_pattern = query.replace(' ', r'.*[\s\.+\-_]')
     
     try:
         regex = re.compile(raw_pattern, flags=re.IGNORECASE)
