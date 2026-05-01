@@ -20,9 +20,9 @@ from database.users_chats_db import db
 from database.extra_db import silicondb
 from database.ia_filterdb import (
     collection, is_second_db_configured, second_collection,
-    get_search_results, delete_files, normalize_query, get_title_cache
+    get_search_results, delete_files, normalize_query, get_title_cache,
+    ai_spell_check, parse_query,
 )
-from fuzzywuzzy import fuzz as fuzz_scorer, process as fuzz_process
 import logging
 import traceback
 
@@ -74,7 +74,8 @@ def set_cached_pages(search, pages):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Stage 2 helpers — TMDB title candidates + AI spell check
+# Stage 3 helpers — TMDB + OMDB suggestion candidates
+# (ai_spell_check is imported from database.ia_filterdb)
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _tmdb_title_candidates(query: str) -> list:
@@ -83,24 +84,18 @@ async def _tmdb_title_candidates(query: str) -> list:
     if not TMDB_API_KEY:
         return []
 
-    clean = re.sub(r'\bs\d{1,2}(?:e\d{1,3})?\b', '', query, flags=re.IGNORECASE).strip()
-    clean = re.sub(r'\bseason\s*\d+\b', '', clean, flags=re.IGNORECASE).strip()
-    clean = re.sub(r'\bep(?:isode)?\s*\d+\b', '', clean, flags=re.IGNORECASE).strip()
-    if not clean:
-        clean = query.strip()
+    pq = parse_query(query)
+    clean = pq.title_only or query.strip()
 
     candidates = []
     try:
         connector = aiohttp.TCPConnector(family=socket.AF_INET)
-        timeout = aiohttp.ClientTimeout(total=6)
+        timeout = aiohttp.ClientTimeout(total=6, connect=3)
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
             for endpoint in ("movie", "tv"):
-                params = {
-                    "api_key": TMDB_API_KEY,
-                    "query": clean,
-                    "include_adult": "false",
-                    "page": 1,
-                }
+                params = {"api_key": TMDB_API_KEY, "query": clean, "include_adult": "false", "page": 1}
+                if pq.year:
+                    params["year"] = pq.year
                 async with session.get(
                     f"https://api.themoviedb.org/3/search/{endpoint}", params=params
                 ) as r:
@@ -121,13 +116,15 @@ async def _fetch_omdb_candidates(query: str) -> list:
     from info import OMDB_API_KEY
     if not OMDB_API_KEY:
         return []
+    pq = parse_query(query)
+    clean = pq.title_only or query.strip()
     results = []
     try:
         connector = aiohttp.TCPConnector(family=socket.AF_INET)
-        timeout = aiohttp.ClientTimeout(total=5)
+        timeout = aiohttp.ClientTimeout(total=5, connect=3)
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
             for mtype in ("movie", "series"):
-                params = {"apikey": OMDB_API_KEY, "s": query, "type": mtype}
+                params = {"apikey": OMDB_API_KEY, "s": clean, "type": mtype}
                 async with session.get("http://www.omdbapi.com/", params=params) as r:
                     if r.status == 200:
                         data = await r.json()
@@ -138,79 +135,6 @@ async def _fetch_omdb_candidates(query: str) -> list:
     except Exception as exc:
         logger.debug("OMDB fetch failed for %r: %s", query, exc)
     return results
-
-
-async def ai_spell_check(wrong_name: str) -> str | None:
-    """
-    Stage 2 – two-phase spell correction:
-
-      Phase A (fast, no network): DB fuzzy match using cached base titles.
-        Handles: missing/extra letters, missing/extra spaces, word reorder,
-                 typical Indian/regional title typos.
-
-      Phase B (network fallback): TMDB single-call for titles not in DB
-        or where DB fuzzy score is too low.
-
-    Returns corrected title that yields DB results, or None.
-    """
-    raw = wrong_name.strip()
-    if not raw:
-        return None
-    query_lower = raw.lower()
-
-    def _strip_year(t: str) -> str:
-        return re.sub(r'\s*\(\d{4}\)\s*$', '', t).strip()
-
-    # ── Phase A: DB fuzzy using in-memory cache ───────────────────────────────
-    try:
-        title_cache = await get_title_cache()
-        db_titles = list(title_cache.keys())
-
-        if db_titles:
-            top = fuzz_process.extract(
-                query_lower,
-                db_titles,
-                scorer=fuzz_scorer.token_set_ratio,
-                limit=15,
-            )
-            for candidate, score in top:
-                if score < 70:
-                    break
-                # Secondary confirmation to avoid false positives
-                pr = fuzz_scorer.partial_ratio(query_lower, candidate)
-                r = fuzz_scorer.ratio(query_lower, candidate)
-                if max(pr, r) < 55:
-                    continue
-                files, _, _ = await get_search_results(candidate)
-                if files:
-                    logger.info("ai_spell_check[DB]: '%s' → '%s' (token_set=%d)", wrong_name, candidate, score)
-                    return candidate
-    except Exception as exc:
-        logger.debug("ai_spell_check DB phase error: %s", exc)
-
-    # ── Phase B: TMDB fallback ────────────────────────────────────────────────
-    try:
-        candidates = await _tmdb_title_candidates(raw)
-        if candidates:
-            scored = sorted(
-                [(t, max(
-                    fuzz_scorer.token_set_ratio(query_lower, t.lower()),
-                    fuzz_scorer.ratio(query_lower, t.lower()),
-                )) for t in candidates],
-                key=lambda x: -x[1]
-            )
-            for title, score in scored:
-                if score < 55:
-                    break
-                for st in list(dict.fromkeys([title, _strip_year(title)])):
-                    files, _, _ = await get_search_results(st)
-                    if files:
-                        logger.info("ai_spell_check[TMDB]: '%s' → '%s' (score=%d)", wrong_name, st, score)
-                        return st
-    except Exception as exc:
-        logger.debug("ai_spell_check TMDB phase error: %s", exc)
-
-    return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -237,40 +161,38 @@ async def show_suggestions(bot, message, query):
     omdb_candidates = omdb_res if isinstance(omdb_res, list) else []
 
     # Merge + deduplicate + score by similarity
+    from database.ia_filterdb import _fuzzy_score, _collapse, _strip_tech
     seen: set = set()
     all_titles = []
     for t in (tmdb_candidates + omdb_candidates):
         k = t.lower()
         if k not in seen:
             seen.add(k)
-            score = max(
-                fuzz_scorer.token_set_ratio(q_lower, k),
-                fuzz_scorer.partial_ratio(q_lower, k),
-                fuzz_scorer.ratio(q_lower, k),
-            )
+            score = _fuzzy_score(_strip_tech(q_lower), _strip_tech(k))
             all_titles.append((t, score))
 
     all_titles.sort(key=lambda x: -x[1])
     final_titles = [t for t, s in all_titles if s >= 30][:MAX_SUGGESTIONS]
 
     # Build DB presence set (from cache — no extra DB call)
-    db_base_set: set = set()
+    db_pairs: list = []
     try:
-        title_cache = await get_title_cache()
-        db_base_set = set(title_cache.keys())
+        db_pairs = await get_title_cache()   # list of (stripped_lower, original)
     except Exception:
         pass
+    db_stripped_set = {p[0] for p in db_pairs}
 
     def _in_db(title: str) -> bool:
-        tl = re.sub(r'\s*\(\d{4}\)\s*$', '', title).strip().lower()
-        # Exact match first
-        if tl in db_base_set:
+        tl = _strip_tech(re.sub(r'\s*\(\d{4}\)\s*$', '', title).strip())
+        tl_col = _collapse(tl)
+        # Collapsed exact match
+        if any(_collapse(b) == tl_col for b in db_stripped_set):
             return True
-        # Fast fuzzy check (only check titles shorter than candidate to reduce work)
+        # Fuzzy check with nearby-length titles only
         return any(
-            fuzz_scorer.token_set_ratio(tl, b) >= 90
-            for b in db_base_set
-            if abs(len(tl) - len(b)) <= 5
+            _fuzzy_score(tl, b) >= 88
+            for b in db_stripped_set
+            if abs(len(tl) - len(b)) <= 4
         )
 
     # Build buttons
