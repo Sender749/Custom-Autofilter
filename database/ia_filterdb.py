@@ -1,7 +1,9 @@
+import asyncio
 import logging
-from struct import pack
 import re
 import base64
+import time
+from struct import pack
 from pyrogram.file_id import FileId
 from pymongo import MongoClient, TEXT
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -9,20 +11,24 @@ from pymongo.errors import DuplicateKeyError, OperationFailure
 from info import USE_CAPTION_FILTER, FILES_DATABASE_URL, SECOND_FILES_DATABASE_URL, DATABASE_NAME, COLLECTION_NAME, MAX_BTN
 
 logger = logging.getLogger(__name__)
+
+# ── Async client (for filter_words only) ─────────────────────────────────────
 async_client = AsyncIOMotorClient(FILES_DATABASE_URL)
 async_db = async_client[DATABASE_NAME]
 filter_words_collection = async_db["filter_words"]
 
+# ── Sync clients (pymongo) ────────────────────────────────────────────────────
 client = MongoClient(FILES_DATABASE_URL)
 db = client[DATABASE_NAME]
 collection = db[COLLECTION_NAME]
-second_collection = None  
+second_collection = None
+
 try:
     collection.create_index([("file_name", TEXT)])
 except OperationFailure as e:
     if 'quota' in str(e).lower():
         if not SECOND_FILES_DATABASE_URL:
-            logger.error(f'your FILES_DATABASE_URL is already full, add SECOND_FILES_DATABASE_URL')
+            logger.error('your FILES_DATABASE_URL is already full, add SECOND_FILES_DATABASE_URL')
         else:
             logger.info('FILES_DATABASE_URL is full, now using SECOND_FILES_DATABASE_URL')
     else:
@@ -32,79 +38,129 @@ if SECOND_FILES_DATABASE_URL:
     second_client = MongoClient(SECOND_FILES_DATABASE_URL)
     second_db = second_client[DATABASE_NAME]
     second_collection = second_db[COLLECTION_NAME]
-    second_collection.create_index([("file_name", TEXT)])
+    try:
+        second_collection.create_index([("file_name", TEXT)])
+    except Exception:
+        pass
+
+# ── In-memory title cache ─────────────────────────────────────────────────────
+_TITLE_CACHE: dict = {}
+_TITLE_CACHE_TIME: float = 0.0
+_TITLE_CACHE_TTL: float = 300.0   # 5-minute refresh
+
 
 def is_second_db_configured() -> bool:
-    return bool(SECOND_FILES_DATABASE_URL and 'second_collection' in globals() and second_collection is not None)
+    return bool(SECOND_FILES_DATABASE_URL and second_collection is not None)
+
 
 def second_db_count_documents():
-     return second_collection.count_documents({})
+    return second_collection.count_documents({})
+
 
 def db_count_documents():
-     return collection.count_documents({})
+    return collection.count_documents({})
+
 
 def get_primary_db_storage():
     stats = db.command("dbStats")
     return stats.get('storageSize', 0)
+
 
 def get_secondary_db_storage():
     if not is_second_db_configured():
         return 0
     stats = second_db.command("dbStats")
     return stats.get('storageSize', 0)
+
+
+# ── Base-title stripper ───────────────────────────────────────────────────────
+_JUNK_RE = re.compile(
+    r'\b(S\d{1,2}E?\d{0,3}|Season\s*\d+|Episode\s*\d+|\d{3,4}p'
+    r'|BluRay|BDRip|Remux|WEBRip|WEB-DL|HDRip|DVDRip|CAM|TS'
+    r'|HEVC|x264|x265|AVC|AV1|AAC|DDP5?\.?\d?|FLAC|MP3|AC3|DTS'
+    r'|ESub|Subs?|Hindi|Tamil|Telugu|Malayalam|Kannada|Punjabi'
+    r'|English|Dual|Multi|HQ|HD|UHD|SDR|HDR|Dolby)\b.*',
+    re.IGNORECASE
+)
+
+
+def _base_title(fn: str) -> str:
+    fn = _JUNK_RE.sub('', fn)
+    fn = re.sub(r'[._\-\+\[\]()]+', ' ', fn)
+    fn = re.sub(r'\s{2,}', ' ', fn)
+    return fn.strip().lower()
+
+
+def _build_title_cache_sync() -> dict:
+    result = {}
+    try:
+        for doc in collection.find({}, {"file_name": 1, "_id": 0}).limit(5000):
+            b = _base_title(doc.get("file_name", ""))
+            if b and b not in result:
+                result[b] = b
+    except Exception as exc:
+        logger.debug("title cache primary error: %s", exc)
+    if is_second_db_configured():
+        try:
+            for doc in second_collection.find({}, {"file_name": 1, "_id": 0}).limit(2000):
+                b = _base_title(doc.get("file_name", ""))
+                if b and b not in result:
+                    result[b] = b
+        except Exception as exc:
+            logger.debug("title cache secondary error: %s", exc)
+    return result
+
+
+async def get_title_cache() -> dict:
+    global _TITLE_CACHE, _TITLE_CACHE_TIME
+    now = time.monotonic()
+    if _TITLE_CACHE and (now - _TITLE_CACHE_TIME) < _TITLE_CACHE_TTL:
+        return _TITLE_CACHE
+    _TITLE_CACHE = await asyncio.to_thread(_build_title_cache_sync)
+    _TITLE_CACHE_TIME = now
+    return _TITLE_CACHE
+
 
 async def save_file(media):
     file_id = unpack_new_file_id(media.file_id)
     file_name = re.sub(r"@\w+|(_|\-|\.|\+)", " ", str(media.file_name))
     file_caption = re.sub(r"@\w+|(_|\-|\.|\+)", " ", str(media.caption))
-    
-    # Auto-classify using TMDB metadata (async, best-effort)
     category = await _classify_file(file_name, file_caption)
-    
+
     document = {
         '_id': file_id,
         'file_name': file_name,
         'file_size': media.file_size,
         'caption': file_caption,
-        'category': category,  # 'movie' | 'series' | 'anime'
+        'category': category,
     }
-    
-    try:
-        collection.insert_one(document)
-        logger.info(f'Saved [{category}] - {file_name}')
-        return 'suc'
-    except DuplicateKeyError:
-        logger.warning(f'Already Saved - {file_name}')
-        return 'dup'
-    except OperationFailure:
-        if SECOND_FILES_DATABASE_URL:
-            try:
-                second_collection.insert_one(document)
-                logger.info(f'Saved to 2nd db [{category}] - {file_name}')
-                return 'suc'
-            except DuplicateKeyError:
-                logger.warning(f'Already Saved in 2nd db - {file_name}')
-                return 'dup'
-        else:
-            logger.error(f'your FILES_DATABASE_URL is already full, add SECOND_FILES_DATABASE_URL')
+
+    def _insert():
+        try:
+            collection.insert_one(document)
+            return 'suc'
+        except DuplicateKeyError:
+            return 'dup'
+        except OperationFailure:
+            if SECOND_FILES_DATABASE_URL:
+                try:
+                    second_collection.insert_one(document)
+                    return 'suc'
+                except DuplicateKeyError:
+                    return 'dup'
             return 'err'
+
+    result = await asyncio.to_thread(_insert)
+    if result == 'suc':
+        global _TITLE_CACHE_TIME
+        _TITLE_CACHE_TIME = 0.0   # invalidate cache on new file
+    logger.info(f'Save [{category}] {file_name}: {result}')
+    return result
 
 
 async def _classify_file(file_name: str, caption: str) -> str:
-    """
-    Smart TMDB-based auto-classification.
-    Decision order:
-      1. Anime keywords in filename → 'anime'
-      2. TMDB genres contain Animation → 'anime' (covers animated movies too)
-      3. TMDB origin country JP or language 'ja' + TV → 'anime'
-      4. TMDB media_type = 'tv' → 'series'
-      5. S01E01 / Season pattern in filename → 'series'
-      6. Default → 'movie'
-    Results are best-effort; failures fall back to filename heuristics.
-    """
     import re as _re
     try:
-        # Step 1: explicit anime keywords in filename
         _ANIME_KW = _re.compile(
             r'\b(anime|hentai|ova|oad|ona|manhwa|manhua|donghua|'
             r'shonen|seinen|shoujo|isekai|mecha|yaoi|yuri)\b|'
@@ -113,7 +169,6 @@ async def _classify_file(file_name: str, caption: str) -> str:
         if _ANIME_KW.search(text):
             return 'anime'
 
-        # Step 2: Extract clean title + year for TMDB query
         _EXT2 = _re.compile(r'\.(mkv|mp4|avi|mov)$', _re.IGNORECASE)
         _JUNK2 = _re.compile(
             r'\b(480p|720p|1080p|2160p|4k|hdr|bluray|bdrip|web[\-\s]?dl|webrip|'
@@ -125,18 +180,15 @@ async def _classify_file(file_name: str, caption: str) -> str:
 
         raw = _EXT2.sub('', file_name)
         raw = _re.sub(r'[@\[\]()\-_\+\.]+', ' ', raw)
-        # check S/E before cleaning
         has_season = bool(_SE2.search(raw) or _S2.search(raw))
         raw = _JUNK2.sub('', raw)
         raw = _re.sub(r'\s{2,}', ' ', raw).strip()
-
         year_m = _YEAR2.search(raw)
         year = year_m.group(0) if year_m else ''
         title = _YEAR2.sub('', raw).strip()
         if not title:
             return 'series' if has_season else 'movie'
 
-        # Step 3: TMDB lookup with caching (reuse module-level cache if available)
         try:
             from info import TMDB_API_KEY
             import aiohttp, socket
@@ -158,7 +210,6 @@ async def _classify_file(file_name: str, caption: str) -> str:
                 item = results[0]
                 mt = item.get('media_type', 'movie')
                 iid = item.get('id')
-                # Fetch full details for genres, origin_country, original_language
                 async with sess.get(
                     f'https://api.themoviedb.org/3/{mt}/{iid}',
                     params={'api_key': TMDB_API_KEY}
@@ -169,497 +220,44 @@ async def _classify_file(file_name: str, caption: str) -> str:
             origin_country = detail.get('origin_country', [])
             original_language = detail.get('original_language', '')
 
-            # Animation genre → always anime (movies + TV)
             if 'animation' in genres or 'anime' in genres:
                 return 'anime'
-
-            # Japanese origin TV show → anime
             if mt == 'tv' and ('JP' in origin_country or original_language == 'ja'):
                 return 'anime'
-
-            # TV type → series
             if mt == 'tv':
                 return 'series'
-
-            # Movie type → movie
             return 'movie'
 
         except Exception as tmdb_err:
             logger.debug(f"TMDB classify error for '{title}': {tmdb_err}")
-            # Fallback to filename heuristics
             return 'series' if has_season else 'movie'
 
     except Exception as e:
         logger.error(f"_classify_file error: {e}")
         return 'movie'
 
-def normalize_query(query: str) -> str:
-    """
-    Normalize natural-language season/episode phrases into compact tokens
-    that match typical file-naming conventions stored in the database.
-
-    Examples:
-      "Tazza khabar season 1 all episodes"  →  "Tazza khabar s01"
-      "breaking bad season 5 episode 10"    →  "breaking bad s05e10"
-      "money heist season 3 all episodes"   →  "money heist s03"
-      "dark s02 e05"                        →  "dark s02e05"   (space between s/e tokens merged)
-      "ironman"                             →  "ironman"       (unchanged)
-    """
-    q = query.strip()
-
-    # ── Merge spaced "s01 e05" → "s01e05" ────────────────────────────────────
-    q = re.sub(r'\b(s\d{1,2})\s+(e\d{1,3})\b', r'\1\2', q, flags=re.IGNORECASE)
-
-    # ── "season N episode M" → "sNNeMM" ──────────────────────────────────────
-    q = re.sub(
-        r'\bseason\s*(\d{1,2})\s+episode\s*(\d{1,3})\b',
-        lambda m: f"s{int(m.group(1)):02d}e{int(m.group(2)):02d}",
-        q, flags=re.IGNORECASE
-    )
-
-    # ── "season N ep M" → "sNNeMM" ───────────────────────────────────────────
-    q = re.sub(
-        r'\bseason\s*(\d{1,2})\s+ep\s*(\d{1,3})\b',
-        lambda m: f"s{int(m.group(1)):02d}e{int(m.group(2)):02d}",
-        q, flags=re.IGNORECASE
-    )
-
-    # ── "season N all episodes" / "season N complete" → "sNN" ────────────────
-    q = re.sub(
-        r'\bseason\s*(\d{1,2})\s+(?:all\s+episodes?|complete|episodes?)\b',
-        lambda m: f"s{int(m.group(1)):02d}",
-        q, flags=re.IGNORECASE
-    )
-
-    # ── Bare "season N" → "sNN" ───────────────────────────────────────────────
-    q = re.sub(
-        r'\bseason\s*(\d{1,2})\b',
-        lambda m: f"s{int(m.group(1)):02d}",
-        q, flags=re.IGNORECASE
-    )
-
-    # ── Bare "episode M" / "ep M" (no season) → "eMM" ────────────────────────
-    q = re.sub(
-        r'\b(?:episode|ep)\s*(\d{1,3})\b',
-        lambda m: f"e{int(m.group(1)):02d}",
-        q, flags=re.IGNORECASE
-    )
-
-    # ── Drop filler words users add (but NOT after conversion above) ──────────
-    q = re.sub(r'\b(?:all\s+episodes?|complete\s+series|full\s+season)\b', '', q, flags=re.IGNORECASE)
-
-    return ' '.join(q.split()).strip()
-
-
-def clean_query(query, filter_words):
-    if not query:
-        return query
-    query = re.sub(r"[^\w\s]", " ", query)
-    if filter_words:
-        pattern = r'\b(?:' + '|'.join(map(re.escape, filter_words)) + r')\b'
-        query = re.sub(pattern, '', query, flags=re.IGNORECASE)
-    return ' '.join(query.split()).strip()
-
-async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
-    query = str(query).strip()
-    query = normalize_query(query)          # ← season/episode normalization
-    filter_words = await get_filter_words()
-    query = clean_query(query, filter_words)
-    if not query:
-        raw_pattern = '.'
-    elif ' ' not in query:
-        raw_pattern = r'(\b|[\.\+\-_])' + query + r'(\b|[\.\+\-_])'
-    else:
-        raw_pattern = query.replace(' ', r'.*[\s\.\+\-_]')
-    try:
-        regex = re.compile(raw_pattern, flags=re.IGNORECASE)
-    except:
-        regex = query
-
-    if USE_CAPTION_FILTER:
-        filter = {'$or': [{'file_name': regex}, {'caption': regex}]}
-    else:
-        filter = {'file_name': regex}
-
-    result_map = {}
-    for doc in collection.find(filter):
-        result_map[doc['_id']] = doc
-    if SECOND_FILES_DATABASE_URL:
-        for doc in second_collection.find(filter):
-            result_map.setdefault(doc['_id'], doc)
-    results = list(result_map.values())
-
-    if lang:
-        lang_files = [file for file in results if lang in file['file_name'].lower()]
-        total_results = len(lang_files)
-        files = lang_files[offset:offset + max_results]
-        next_offset = offset + max_results
-        if next_offset >= total_results:
-            next_offset = ''
-        return files, next_offset, total_results
-
-    ranked = rank_results(query, results)
-    total_results = len(ranked)
-    files = ranked[offset:offset + max_results]
-    next_offset = offset + max_results
-    if next_offset >= total_results:
-        next_offset = ''
-    return files, next_offset, total_results
-
-QUALITY_RANK = {
-    "bluray": 100,
-    "bdrip": 95,
-    "remux": 98,
-    "web-dl": 90,
-    "webdl": 90,
-    "webrip": 85,
-    "hdrip": 75,
-    "hd": 70,
-    "dvdrip": 65,
-    "cam": 10,
-    "ts": 15
-}
-
-def extract_year(text: str):
-    m = re.findall(r"(19\d{2}|20\d{2})", text)
-    return max(map(int, m)) if m else 0
-
-def extract_season_episode(text: str):
-    season = episode = 0
-    sm = re.search(r"s(\d{1,2})", text, re.I)
-    em = re.search(r"e(\d{1,2})", text, re.I)
-    if sm:
-        season = int(sm.group(1))
-    if em:
-        episode = int(em.group(1))
-    return season, episode
-
-def extract_quality(text: str):
-    t = text.lower()
-    for q, score in QUALITY_RANK.items():
-        if q in t:
-            return score
-    return 0
-
-def has_multi_audio(text: str):
-    t = text.lower()
-    return any(x in t for x in ["dual", "multi", "multi-audio", "dual-audio"])
-
-def normalize_title(text: str):
-    text = text.lower()
-    text = re.sub(r"(19\d{2}|20\d{2})", "", text)
-    text = re.sub(r"s\d{1,2}e\d{1,2}", "", text)
-    text = re.sub(r"s\d{1,2}", "", text)
-    return re.sub(r"[^a-z0-9 ]", "", text).strip()
-    
-def rank_results(query, files):
-    q_norm = normalize_title(query)
-    def score(f):
-        text = f.get("caption") or f.get("file_name", "")
-        t_norm = normalize_title(text)
-        exact = 1000 if t_norm == q_norm else 0
-        starts = 300 if t_norm.startswith(q_norm) else 0
-        contains = 150 if q_norm in t_norm else 0
-        year = extract_year(text) * 5
-        quality = extract_quality(text)
-        season, episode = extract_season_episode(text)
-        season_score = season * 50
-        episode_score = -episode
-        audio = 200 if has_multi_audio(text) else 0
-        return exact + starts + contains + year + quality + season_score + episode_score + audio
-    return sorted(files, key=score, reverse=True)
-
-async def delete_files(query):
-    query = query.strip()
-    if not query:
-        raw_pattern = '.'
-    elif ' ' not in query:
-        raw_pattern = r'(\b|[\.\+\-_])' + query + r'(\b|[\.\+\-_])'
-    else:
-        raw_pattern = query.replace(' ', r'.*[\s\.\+\-_]')
-    
-    try:
-        regex = re.compile(raw_pattern, flags=re.IGNORECASE)
-    except:
-        regex = query
-        
-    filter = {'file_name': regex}
-    
-    result1 = collection.delete_many(filter)
-    
-    result2 = None
-    if SECOND_FILES_DATABASE_URL:
-        result2 = second_collection.delete_many(filter)
-    
-    total_deleted = result1.deleted_count
-    if result2:
-        total_deleted += result2.deleted_count
-    
-    return total_deleted
-
-async def get_file_details(query):
-    file_details = collection.find_one({'_id': query})
-    if not file_details and SECOND_FILES_DATABASE_URL:
-        file_details = second_collection.find_one({'_id': query})
-    return file_details
-
-def encode_file_id(s: bytes) -> str:
-    r = b""
-    n = 0
-    for i in s + bytes([22]) + bytes([4]):
-        if i == 0:
-            n += 1
-        else:
-            if n:
-                r += b"\x00" + bytes([n])
-                n = 0
-            r += bytes([i])
-    return base64.urlsafe_b64encode(r).decode().rstrip("=")
-
-def unpack_new_file_id(new_file_id):
-    decoded = FileId.decode(new_file_id)
-    file_id = encode_file_id(
-        pack(
-            "<iiqq",
-            int(decoded.file_type),
-            decoded.dc_id,
-            decoded.media_id,
-            decoded.access_hash
-        )
-    )
-    return file_id
-
-async def get_filter_words():
-    try:
-        doc = await filter_words_collection.find_one({"_id": "filter_words"})
-        return set(doc["words"]) if doc else set()
-    except Exception as e:
-        logger.error(f"Error getting filter words: {e}")
-        return set()
-
-async def set_filter_words(words):
-    try:
-        await filter_words_collection.update_one(
-            {"_id": "filter_words"},
-            {"$set": {"words": list(words)}},
-            upsert=True
-        )
-    except Exception as e:
-        logger.error(f"Error setting filter words: {e}")
-def is_second_db_configured() -> bool:
-    return bool(SECOND_FILES_DATABASE_URL and 'second_collection' in globals() and second_collection is not None)
-
-def second_db_count_documents():
-     return second_collection.count_documents({})
-
-def db_count_documents():
-     return collection.count_documents({})
-
-def get_primary_db_storage():
-    stats = db.command("dbStats")
-    return stats.get('storageSize', 0)
-
-def get_secondary_db_storage():
-    if not is_second_db_configured():
-        return 0
-    stats = second_db.command("dbStats")
-    return stats.get('storageSize', 0)
-
-async def save_file(media):
-    file_id = unpack_new_file_id(media.file_id)
-    file_name = re.sub(r"@\w+|(_|\-|\.|\\+)", " ", str(media.file_name))
-    file_caption = re.sub(r"@\w+|(_|\-|\.|\\+)", " ", str(media.caption))
-    
-    # Auto-classify using TMDB metadata (async, best-effort)
-    category = await _classify_file(file_name, file_caption)
-    
-    document = {
-        '_id': file_id,
-        'file_name': file_name,
-        'file_size': media.file_size,
-        'caption': file_caption,
-        'category': category,  # 'movie' | 'series' | 'anime'
-    }
-    
-    try:
-        collection.insert_one(document)
-        logger.info(f'Saved [{category}] - {file_name}')
-        return 'suc'
-    except DuplicateKeyError:
-        logger.warning(f'Already Saved - {file_name}')
-        return 'dup'
-    except OperationFailure:
-        if SECOND_FILES_DATABASE_URL:
-            try:
-                second_collection.insert_one(document)
-                logger.info(f'Saved to 2nd db [{category}] - {file_name}')
-                return 'suc'
-            except DuplicateKeyError:
-                logger.warning(f'Already Saved in 2nd db - {file_name}')
-                return 'dup'
-        else:
-            logger.error(f'your FILES_DATABASE_URL is already full, add SECOND_FILES_DATABASE_URL')
-            return 'err'
-
-
-async def _classify_file(file_name: str, caption: str) -> str:
-    """
-    Smart TMDB-based auto-classification.
-    Decision order:
-      1. Anime keywords in filename → 'anime'
-      2. TMDB genres contain Animation → 'anime' (covers animated movies too)
-      3. TMDB origin country JP or language 'ja' + TV → 'anime'
-      4. TMDB media_type = 'tv' → 'series'
-      5. S01E01 / Season pattern in filename → 'series'
-      6. Default → 'movie'
-    Results are best-effort; failures fall back to filename heuristics.
-    """
-    import re as _re
-    try:
-        # Step 1: explicit anime keywords in filename
-        _ANIME_KW = _re.compile(
-            r'\b(anime|hentai|ova|oad|ona|manhwa|manhua|donghua|'
-            r'shonen|seinen|shoujo|isekai|mecha|yaoi|yuri)\b|'
-            r'[\u3040-\u30FF\u4E00-\u9FFF]', _re.IGNORECASE)
-        text = f"{caption} {file_name}"
-        if _ANIME_KW.search(text):
-            return 'anime'
-
-        # Step 2: Extract clean title + year for TMDB query
-        _EXT2 = _re.compile(r'\.(mkv|mp4|avi|mov)$', _re.IGNORECASE)
-        _JUNK2 = _re.compile(
-            r'\b(480p|720p|1080p|2160p|4k|hdr|bluray|bdrip|web[\-\s]?dl|webrip|'
-            r'x264|x265|hevc|aac|ac3|dts|hindi|english|tamil|dubbed|subbed)\b.*',
-            _re.IGNORECASE)
-        _SE2 = _re.compile(r'\b[Ss](\d{1,2})[Ee](\d{1,2})\b')
-        _S2 = _re.compile(r'\b[Ss](\d{1,2})\b')
-        _YEAR2 = _re.compile(r'\b(19[5-9]\d|20[0-3]\d)\b')
-
-        raw = _EXT2.sub('', file_name)
-        raw = _re.sub(r'[@\[\]()\-_\+\.]+', ' ', raw)
-        # check S/E before cleaning
-        has_season = bool(_SE2.search(raw) or _S2.search(raw))
-        raw = _JUNK2.sub('', raw)
-        raw = _re.sub(r'\s{2,}', ' ', raw).strip()
-
-        year_m = _YEAR2.search(raw)
-        year = year_m.group(0) if year_m else ''
-        title = _YEAR2.sub('', raw).strip()
-        if not title:
-            return 'series' if has_season else 'movie'
-
-        # Step 3: TMDB lookup with caching (reuse module-level cache if available)
-        try:
-            from info import TMDB_API_KEY
-            import aiohttp, socket
-            if not TMDB_API_KEY:
-                raise ValueError("no key")
-            to = aiohttp.ClientTimeout(total=8, connect=4)
-            connector = aiohttp.TCPConnector(family=socket.AF_INET)
-            params = {'api_key': TMDB_API_KEY, 'query': title, 'page': 1}
-            if year:
-                params['year'] = year
-            async with aiohttp.ClientSession(connector=connector, timeout=to) as sess:
-                async with sess.get('https://api.themoviedb.org/3/search/multi', params=params) as r:
-                    if r.status != 200:
-                        raise ValueError(f"TMDB status {r.status}")
-                    data = await r.json()
-                results = [x for x in data.get('results', []) if x.get('media_type') != 'person']
-                if not results:
-                    return 'series' if has_season else 'movie'
-                item = results[0]
-                mt = item.get('media_type', 'movie')
-                iid = item.get('id')
-                # Fetch full details for genres, origin_country, original_language
-                async with sess.get(
-                    f'https://api.themoviedb.org/3/{mt}/{iid}',
-                    params={'api_key': TMDB_API_KEY}
-                ) as dr:
-                    detail = await dr.json() if dr.status == 200 else item
-
-            genres = [g['name'].lower() for g in detail.get('genres', [])]
-            origin_country = detail.get('origin_country', [])
-            original_language = detail.get('original_language', '')
-
-            # Animation genre → always anime (movies + TV)
-            if 'animation' in genres or 'anime' in genres:
-                return 'anime'
-
-            # Japanese origin TV show → anime
-            if mt == 'tv' and ('JP' in origin_country or original_language == 'ja'):
-                return 'anime'
-
-            # TV type → series
-            if mt == 'tv':
-                return 'series'
-
-            # Movie type → movie
-            return 'movie'
-
-        except Exception as tmdb_err:
-            logger.debug(f"TMDB classify error for '{title}': {tmdb_err}")
-            # Fallback to filename heuristics
-            return 'series' if has_season else 'movie'
-
-    except Exception as e:
-        logger.error(f"_classify_file error: {e}")
-        return 'movie'
 
 def normalize_query(query: str) -> str:
-    """
-    Normalize natural-language season/episode phrases into compact tokens
-    that match typical file-naming conventions stored in the database.
-
-    Examples:
-      "Tazza khabar season 1 all episodes"  →  "Tazza khabar s01"
-      "breaking bad season 5 episode 10"    →  "breaking bad s05e10"
-      "money heist season 3 all episodes"   →  "money heist s03"
-      "dark s02 e05"                        →  "dark s02e05"   (space between s/e tokens merged)
-      "ironman"                             →  "ironman"       (unchanged)
-    """
     q = query.strip()
-
-    # ── Merge spaced "s01 e05" → "s01e05" ────────────────────────────────────
+    # Merge "s01 e05" → "s01e05"
     q = re.sub(r'\b(s\d{1,2})\s+(e\d{1,3})\b', r'\1\2', q, flags=re.IGNORECASE)
-
-    # ── "season N episode M" → "sNNeMM" ──────────────────────────────────────
-    q = re.sub(
-        r'\bseason\s*(\d{1,2})\s+episode\s*(\d{1,3})\b',
-        lambda m: f"s{int(m.group(1)):02d}e{int(m.group(2)):02d}",
-        q, flags=re.IGNORECASE
-    )
-
-    # ── "season N ep M" → "sNNeMM" ───────────────────────────────────────────
-    q = re.sub(
-        r'\bseason\s*(\d{1,2})\s+ep\s*(\d{1,3})\b',
-        lambda m: f"s{int(m.group(1)):02d}e{int(m.group(2)):02d}",
-        q, flags=re.IGNORECASE
-    )
-
-    # ── "season N all episodes" / "season N complete" → "sNN" ────────────────
-    q = re.sub(
-        r'\bseason\s*(\d{1,2})\s+(?:all\s+episodes?|complete|episodes?)\b',
-        lambda m: f"s{int(m.group(1)):02d}",
-        q, flags=re.IGNORECASE
-    )
-
-    # ── Bare "season N" → "sNN" ───────────────────────────────────────────────
-    q = re.sub(
-        r'\bseason\s*(\d{1,2})\b',
-        lambda m: f"s{int(m.group(1)):02d}",
-        q, flags=re.IGNORECASE
-    )
-
-    # ── Bare "episode M" / "ep M" (no season) → "eMM" ────────────────────────
-    q = re.sub(
-        r'\b(?:episode|ep)\s*(\d{1,3})\b',
-        lambda m: f"e{int(m.group(1)):02d}",
-        q, flags=re.IGNORECASE
-    )
-
-    # ── Drop filler words users add (but NOT after conversion above) ──────────
+    # "season N episode M" → "sNNeMM"
+    q = re.sub(r'\bseason\s*(\d{1,2})\s+episode\s*(\d{1,3})\b',
+               lambda m: f"s{int(m.group(1)):02d}e{int(m.group(2)):02d}", q, flags=re.IGNORECASE)
+    # "season N ep M" → "sNNeMM"
+    q = re.sub(r'\bseason\s*(\d{1,2})\s+ep\s*(\d{1,3})\b',
+               lambda m: f"s{int(m.group(1)):02d}e{int(m.group(2)):02d}", q, flags=re.IGNORECASE)
+    # "season N all/complete" → "sNN"
+    q = re.sub(r'\bseason\s*(\d{1,2})\s+(?:all\s+episodes?|complete|episodes?)\b',
+               lambda m: f"s{int(m.group(1)):02d}", q, flags=re.IGNORECASE)
+    # bare "season N" → "sNN"
+    q = re.sub(r'\bseason\s*(\d{1,2})\b',
+               lambda m: f"s{int(m.group(1)):02d}", q, flags=re.IGNORECASE)
+    # bare "episode M" / "ep M" → "eMM"
+    q = re.sub(r'\b(?:episode|ep)\s*(\d{1,3})\b',
+               lambda m: f"e{int(m.group(1)):02d}", q, flags=re.IGNORECASE)
+    # drop trailing filler
     q = re.sub(r'\b(?:all\s+episodes?|complete\s+series|full\s+season)\b', '', q, flags=re.IGNORECASE)
-
     return ' '.join(q.split()).strip()
 
 
@@ -673,27 +271,12 @@ def clean_query(query, filter_words):
     return ' '.join(query.split()).strip()
 
 
-# ── Resolution rank for secondary sorting within same quality tier ────────────
-RESOLUTION_RANK = {
-    "2160p": 200, "4k": 200,
-    "1080p": 150,
-    "720p": 100,
-    "480p": 50,
-    "360p": 20,
-}
-
+# ── Ranking helpers ───────────────────────────────────────────────────────────
+RESOLUTION_RANK = {"2160p": 200, "4k": 200, "1080p": 150, "720p": 100, "480p": 50, "360p": 20}
 QUALITY_RANK = {
-    "bluray": 100,
-    "bdrip": 95,
-    "remux": 98,
-    "web-dl": 90,
-    "webdl": 90,
-    "webrip": 85,
-    "hdrip": 75,
-    "hd": 70,
-    "dvdrip": 65,
-    "cam": 10,
-    "ts": 15
+    "bluray": 100, "bdrip": 95, "remux": 98,
+    "web-dl": 90, "webdl": 90, "webrip": 85,
+    "hdrip": 75, "hd": 70, "dvdrip": 65, "cam": 10, "ts": 15,
 }
 
 
@@ -715,17 +298,17 @@ def extract_season_episode(text: str):
 
 def extract_quality(text: str):
     t = text.lower()
-    for q, score in QUALITY_RANK.items():
+    for q, s in QUALITY_RANK.items():
         if q in t:
-            return score
+            return s
     return 0
 
 
 def extract_resolution(text: str) -> int:
     t = text.lower()
-    for res, score in RESOLUTION_RANK.items():
-        if res in t:
-            return score
+    for r, s in RESOLUTION_RANK.items():
+        if r in t:
+            return s
     return 0
 
 
@@ -735,14 +318,10 @@ def has_multi_audio(text: str):
 
 
 def normalize_title(text: str) -> str:
-    """Strip technical tags and return clean lowercase title for comparison."""
     text = text.lower()
-    # Remove year
     text = re.sub(r"(19\d{2}|20\d{2})", "", text)
-    # Remove S01E01, S01
     text = re.sub(r"s\d{1,2}e\d{1,2}", "", text)
     text = re.sub(r"s\d{1,2}", "", text)
-    # Remove quality/codec tags
     text = re.sub(
         r"\b(480p|720p|1080p|2160p|4k|hdr|bluray|bdrip|remux|web[\-\s]?dl|webrip|"
         r"hdrip|dvdrip|cam|ts|x264|x265|hevc|aac|ac3|dts|flac|mp3|ddp5|"
@@ -753,146 +332,112 @@ def normalize_title(text: str) -> str:
 
 
 def _title_words(text: str) -> list:
-    """Return list of significant words from a normalized title."""
     return [w for w in normalize_title(text).split() if w]
 
 
 def _word_match_score(query_words: list, file_text: str) -> int:
-    """
-    Word-based exact match scoring.
-    - All query words present in file → high score
-    - Score = (matched_words / total_query_words) * 1000
-    - Bonus if words appear consecutively / as prefix
-    Returns 0–1000.
-    """
     if not query_words:
         return 0
     file_words = _title_words(file_text)
     if not file_words:
         return 0
-
     matched = sum(1 for w in query_words if w in file_words)
     base = int((matched / len(query_words)) * 1000)
-
-    # Extra bonus: all words matched
     if matched == len(query_words):
         base += 200
-
-    # Extra bonus: query words appear as a contiguous block at start of file title
     file_str = " ".join(file_words)
     query_str = " ".join(query_words)
     if file_str.startswith(query_str):
         base += 300
     elif query_str in file_str:
         base += 100
-
     return base
 
 
 def rank_results(query: str, files: list) -> list:
-    """
-    Rank search results so that:
-    1. Exact/best title match is on top (word-based, not character-based)
-    2. Among same title — higher quality print first (Bluray > WEB-DL > WEBRip …)
-    3. Among same quality — higher resolution first (2160p > 1080p > 720p …)
-    4. Tiebreak: newer year > multi-audio > episode order
-    """
     q_words = _title_words(query)
     q_norm = normalize_title(query)
 
     def score(f):
         text = f.get("caption") or f.get("file_name", "")
         t_norm = normalize_title(text)
-
-        # ── Tier 1: Title match (word-based) ─────────────────────────────────
         word_score = _word_match_score(q_words, text)
-
-        # Hard exact match bonus (full normalized title equality)
         exact_bonus = 2000 if t_norm == q_norm else 0
-
-        # ── Tier 2: Quality ───────────────────────────────────────────────────
-        quality = extract_quality(text)          # 0–100
-
-        # ── Tier 3: Resolution ────────────────────────────────────────────────
-        resolution = extract_resolution(text)    # 0–200
-
-        # ── Tier 4: Tiebreakers ───────────────────────────────────────────────
+        quality = extract_quality(text)
+        resolution = extract_resolution(text)
         year = extract_year(text) * 2
         audio = 50 if has_multi_audio(text) else 0
         season, episode = extract_season_episode(text)
-        season_score = season * 10
-        episode_score = -episode          # lower episode number first within same title
-
         return (
-            exact_bonus
-            + word_score
-            + quality * 10        # scale quality so it's secondary to title match
-            + resolution * 5      # scale resolution so it's tertiary
-            + year
-            + audio
-            + season_score
-            + episode_score
+            exact_bonus + word_score
+            + quality * 10 + resolution * 5
+            + year + audio
+            + season * 10 - episode
         )
 
     return sorted(files, key=score, reverse=True)
 
 
+def _do_search(filter_dict) -> list:
+    """Sync helper: query both DBs and merge results. Runs in a thread."""
+    result_map = {}
+    for doc in collection.find(filter_dict):
+        result_map[doc['_id']] = doc
+    if is_second_db_configured():
+        for doc in second_collection.find(filter_dict):
+            result_map.setdefault(doc['_id'], doc)
+    return list(result_map.values())
+
+
 async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
+    """
+    Stage 1: exact/regex search in DB.
+    Runs the blocking MongoDB query in a thread pool to avoid blocking the event loop.
+    """
     query = str(query).strip()
-    query = normalize_query(query)          # ← season/episode normalization
+    query = normalize_query(query)
     filter_words = await get_filter_words()
     query = clean_query(query, filter_words)
+
     if not query:
         raw_pattern = '.'
     elif ' ' not in query:
-        # Single word: word-boundary match so "you" doesn't match "your" etc.
         raw_pattern = r'(\b|[\.+\-_])' + re.escape(query) + r'(\b|[\.+\-_])'
     else:
-        # Multi-word: each word must appear (word-boundary aware, order flexible)
         words = query.split()
-        # Build pattern: all words must be present anywhere in the filename
-        # We use a lookahead-based approach for word-order-independent matching
-        lookaheads = ''.join(
-            r'(?=.*\b' + re.escape(w) + r'\b)' for w in words
-        )
+        # All words must be present, word-boundary aware, order-independent
+        lookaheads = ''.join(r'(?=.*\b' + re.escape(w) + r'\b)' for w in words)
         raw_pattern = lookaheads + '.*'
+
     try:
         regex = re.compile(raw_pattern, flags=re.IGNORECASE)
     except Exception:
-        # Fallback to simple contains search
         try:
             regex = re.compile(re.escape(query), flags=re.IGNORECASE)
         except Exception:
             regex = query
 
     if USE_CAPTION_FILTER:
-        filter = {'$or': [{'file_name': regex}, {'caption': regex}]}
+        filter_dict = {'$or': [{'file_name': regex}, {'caption': regex}]}
     else:
-        filter = {'file_name': regex}
+        filter_dict = {'file_name': regex}
 
-    result_map = {}
-    for doc in collection.find(filter):
-        result_map[doc['_id']] = doc
-    if SECOND_FILES_DATABASE_URL:
-        for doc in second_collection.find(filter):
-            result_map.setdefault(doc['_id'], doc)
-    results = list(result_map.values())
+    # Offload blocking MongoDB call to thread pool
+    results = await asyncio.to_thread(_do_search, filter_dict)
 
     if lang:
-        lang_files = [file for file in results if lang in file['file_name'].lower()]
+        lang_files = [f for f in results if lang in f['file_name'].lower()]
         total_results = len(lang_files)
         files = lang_files[offset:offset + max_results]
-        next_offset = offset + max_results
-        if next_offset >= total_results:
-            next_offset = ''
-        return files, next_offset, total_results
+    else:
+        ranked = rank_results(query, results)
+        total_results = len(ranked)
+        files = ranked[offset:offset + max_results]
 
-    ranked = rank_results(query, results)
-    total_results = len(ranked)
-    files = ranked[offset:offset + max_results]
     next_offset = offset + max_results
     if next_offset >= total_results:
         next_offset = ''
+
     return files, next_offset, total_results
 
 
@@ -904,31 +449,33 @@ async def delete_files(query):
         raw_pattern = r'(\b|[\.+\-_])' + query + r'(\b|[\.+\-_])'
     else:
         raw_pattern = query.replace(' ', r'.*[\s\.+\-_]')
-    
+
     try:
         regex = re.compile(raw_pattern, flags=re.IGNORECASE)
-    except:
+    except Exception:
         regex = query
-        
-    filter = {'file_name': regex}
-    
-    result1 = collection.delete_many(filter)
-    
-    result2 = None
-    if SECOND_FILES_DATABASE_URL:
-        result2 = second_collection.delete_many(filter)
-    
-    total_deleted = result1.deleted_count
-    if result2:
-        total_deleted += result2.deleted_count
-    
-    return total_deleted
+
+    filter_dict = {'file_name': regex}
+
+    def _del():
+        r1 = collection.delete_many(filter_dict)
+        total = r1.deleted_count
+        if is_second_db_configured():
+            r2 = second_collection.delete_many(filter_dict)
+            total += r2.deleted_count
+        return total
+
+    return await asyncio.to_thread(_del)
+
 
 async def get_file_details(query):
-    file_details = collection.find_one({'_id': query})
-    if not file_details and SECOND_FILES_DATABASE_URL:
-        file_details = second_collection.find_one({'_id': query})
-    return file_details
+    def _find():
+        fd = collection.find_one({'_id': query})
+        if not fd and is_second_db_configured():
+            fd = second_collection.find_one({'_id': query})
+        return fd
+    return await asyncio.to_thread(_find)
+
 
 def encode_file_id(s: bytes) -> str:
     r = b""
@@ -943,6 +490,7 @@ def encode_file_id(s: bytes) -> str:
             r += bytes([i])
     return base64.urlsafe_b64encode(r).decode().rstrip("=")
 
+
 def unpack_new_file_id(new_file_id):
     decoded = FileId.decode(new_file_id)
     file_id = encode_file_id(
@@ -956,6 +504,7 @@ def unpack_new_file_id(new_file_id):
     )
     return file_id
 
+
 async def get_filter_words():
     try:
         doc = await filter_words_collection.find_one({"_id": "filter_words"})
@@ -963,6 +512,7 @@ async def get_filter_words():
     except Exception as e:
         logger.error(f"Error getting filter words: {e}")
         return set()
+
 
 async def set_filter_words(words):
     try:
