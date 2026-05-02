@@ -20,8 +20,10 @@ from database.users_chats_db import db
 from database.extra_db import silicondb
 from database.ia_filterdb import (
     collection, is_second_db_configured, second_collection,
-    get_search_results, delete_files, normalize_query, get_title_cache,
+    get_search_results, get_all_results, delete_files,
+    normalize_query, get_title_cache,
     ai_spell_check, parse_query,
+    _strip_tech, _extract_year, _extract_season_episode,
 )
 import logging
 import traceback
@@ -33,13 +35,106 @@ logger.setLevel(logging.ERROR)
 BUTTONS = {}
 FILES_ID = {}
 CAP = {}
-PAGE_CACHE = {}
-PAGE_CACHE_TTL = 300   # seconds
-PAGE_PREFETCH = 3
+_META_STORE = {}    # key → {seasons, years, languages} for each active search
 SUGGESTION_TRACKER = {}
 WRONG_SPELL_WAIT = {}
 CUSTOM_REPLY_WAIT = {}
 REQUEST_DEDUP = {}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RESULT CACHE — stores the full ranked file list for each query.
+# Pagination is pure Python slicing — zero extra DB calls after first search.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_RESULT_CACHE: dict = {}        # key → {"files": [...], "meta": {...}, "time": float}
+_RESULT_CACHE_TTL: int = 600    # 10 minutes
+
+
+def _cache_key(search: str) -> str:
+    return search.lower().strip()
+
+
+def _cache_get(search: str) -> dict | None:
+    key = _cache_key(search)
+    entry = _RESULT_CACHE.get(key)
+    if not entry:
+        return None
+    if time.time() - entry["time"] > _RESULT_CACHE_TTL:
+        _RESULT_CACHE.pop(key, None)
+        return None
+    return entry
+
+
+def _cache_set(search: str, files: list, meta: dict):
+    """Store the full ranked file list and per-query metadata."""
+    key = _cache_key(search)
+    _RESULT_CACHE[key] = {"files": files, "meta": meta, "time": time.time()}
+    # Keep cache size bounded (max 200 unique queries)
+    if len(_RESULT_CACHE) > 200:
+        oldest = min(_RESULT_CACHE, key=lambda k: _RESULT_CACHE[k]["time"])
+        _RESULT_CACHE.pop(oldest, None)
+
+
+def _get_page(search: str, offset: int, max_btn: int) -> tuple:
+    """
+    Get a page of files from cache.
+    Returns (files, next_offset, total) — all from memory, no DB.
+    """
+    entry = _cache_get(search)
+    if not entry:
+        return None, None, None
+    all_files = entry["files"]
+    total = len(all_files)
+    files = all_files[offset:offset + max_btn]
+    next_offset = offset + max_btn
+    if next_offset >= total:
+        next_offset = ''
+    return files, next_offset, total
+
+
+def _extract_meta(files: list) -> dict:
+    """
+    Scan all results once and extract:
+      - available seasons  (sorted descending)
+      - available years    (sorted descending)
+      - available languages
+    All derived from actual filenames in the result set — not hardcoded.
+    """
+    seasons: set = set()
+    years: set = set()
+    langs: set = set()
+
+    _LANG_LIST = [
+        'hindi', 'english', 'tamil', 'telugu', 'malayalam',
+        'kannada', 'punjabi', 'bengali', 'gujarati', 'marathi',
+        'dual', 'multi',
+    ]
+
+    for f in files:
+        text = (f.get("file_name") or "") + " " + (f.get("caption") or "")
+        tl = text.lower()
+
+        # Seasons
+        for m in re.finditer(r'\bs(\d{1,2})\b', tl):
+            n = int(m.group(1))
+            if 1 <= n <= 50:
+                seasons.add(n)
+
+        # Years
+        y = _extract_year(text)
+        if y:
+            years.add(y)
+
+        # Languages
+        for lang in _LANG_LIST:
+            if re.search(r'\b' + lang + r'\b', tl):
+                langs.add(lang)
+
+    return {
+        "seasons":   sorted(seasons, reverse=True),
+        "years":     sorted(years, reverse=True),
+        "languages": sorted(langs),
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -51,26 +146,6 @@ def get_display_name(file: dict) -> str:
     if caption and caption.strip():
         return caption.strip()
     return file.get("file_name", "Unknown File")
-
-
-def _page_cache_key(search: str):
-    return search.lower().strip()
-
-
-def get_cached_pages(search):
-    key = _page_cache_key(search)
-    data = PAGE_CACHE.get(key)
-    if not data:
-        return None
-    if time.time() - data["time"] > PAGE_CACHE_TTL:
-        PAGE_CACHE.pop(key, None)
-        return None
-    return data["pages"]
-
-
-def set_cached_pages(search, pages):
-    key = _page_cache_key(search)
-    PAGE_CACHE[key] = {"pages": pages, "time": time.time()}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -310,6 +385,10 @@ async def trigger_auto_request(bot, message, search):
 # Main auto_filter — 3-stage search pipeline
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Main auto_filter — 3-stage search pipeline
+# ══════════════════════════════════════════════════════════════════════════════
+
 async def auto_filter(client, msg, spoll=False):
     if not spoll:
         message = msg
@@ -317,46 +396,60 @@ async def auto_filter(client, msg, spoll=False):
         if real_user:
             message.from_user = real_user
 
-        # ── Stage 1: Exact/regex DB search ────────────────────────────────────
         search = normalize_query(message.text)
         chat_id = message.chat.id
+
+        # ── Fire DB search + settings fetch + status update in parallel ───────
         search_msg = await msg.reply_text(f'<b>🕵️ sᴇᴀʀᴄʜɪɴɢ <code>{search}</code></b>')
-        settings = await get_settings(chat_id)
 
-        files = []
-        offset = 0
-        total_results = 0
-        cached_pages = get_cached_pages(search)
-        if cached_pages:
-            files, offset, total_results = cached_pages[0]
+        # Check cache first (synchronous, zero-cost)
+        entry = _cache_get(search)
+
+        if entry:
+            all_files = entry["files"]
+            meta      = entry["meta"]
+            # Fire settings + analytics concurrently (non-blocking)
+            settings, _ = await asyncio.gather(
+                get_settings(chat_id),
+                asyncio.to_thread(silicondb.update_silicon_messages, message.from_user.id, message.text),
+                return_exceptions=True
+            )
+            if isinstance(settings, Exception):
+                settings = {}
         else:
-            pages = []
-            off = 0
-            for _ in range(PAGE_PREFETCH):
-                f, n_off, total = await get_search_results(search, offset=off)
-                pages.append((f, n_off, total))
-                if off == 0:
-                    files = f
-                    offset = n_off or 0
-                    total_results = total
-                if not n_off:
-                    break
-                off = int(n_off)
-            set_cached_pages(search, pages)
-            files, offset, total_results = pages[0]
+            # Cache miss: fetch ALL results + settings concurrently
+            (all_files, settings), _ = await asyncio.gather(
+                asyncio.gather(
+                    get_all_results(search),
+                    get_settings(chat_id),
+                ),
+                asyncio.to_thread(silicondb.update_silicon_messages, message.from_user.id, message.text),
+                return_exceptions=True
+            )
+            if isinstance(all_files, Exception):
+                all_files = []
+            if isinstance(settings, Exception):
+                settings = {}
+            if all_files:
+                meta = _extract_meta(all_files)
+                _cache_set(search, all_files, meta)
+            else:
+                meta = {}
 
-        silicondb.update_silicon_messages(message.from_user.id, message.text)
         await search_msg.delete()
 
+        max_btn = int(MAX_BTN)
+        files = all_files[:max_btn]
+        total_results = len(all_files)
+        offset = max_btn if total_results > max_btn else ''
+
         if not files:
-            # Stage 1 failed — check if this is a suggestion-click (already tried Stage 2)
             if getattr(msg, "from_suggestion", False):
-                # Stage 3 exhausted → auto-request
                 await trigger_auto_request(client, message, search)
                 return
 
             if settings.get("spell_check", True):
-                # ── Stage 2: AI spell check (DB fuzzy → TMDB) ─────────────────
+                # ── Stage 2: AI spell check ────────────────────────────────────
                 ai_sts = await msg.reply_text('<b>👾 ᴀɪ ɪs ᴄʜᴇᴄᴋɪɴɢ ꜱᴘᴇʟʟɪɴɢ...</b>')
                 corrected = await ai_spell_check(search)
                 if corrected:
@@ -364,13 +457,13 @@ async def auto_filter(client, msg, spoll=False):
                         f'<b><i>ᴀɪ ꜱᴜɢɢᴇꜱᴛᴇᴅ 👉 <code>{corrected}</code>\n'
                         f'ꜱᴇᴀʀᴄʜɪɴɢ ꜰᴏʀ 👉 <code>{corrected}</code></i></b>'
                     )
-                    await asyncio.sleep(1.5)
+                    await asyncio.sleep(1.2)
                     msg.text = corrected
                     await ai_sts.delete()
                     return await auto_filter(client, msg)
 
                 await ai_sts.delete()
-                # ── Stage 3: Suggestion buttons (TMDB + OMDB) ─────────────────
+                # ── Stage 3: Suggestion buttons ────────────────────────────────
                 await show_suggestions(client, msg, search)
             return
 
@@ -378,12 +471,18 @@ async def auto_filter(client, msg, spoll=False):
         settings = await get_settings(msg.message.chat.id)
         message = msg.message.reply_to_message
         search, files, offset, total_results = spoll
+        all_files = files
+        meta = _extract_meta(all_files)
 
     # ── Build result buttons / links ───────────────────────────────────────────
     req = message.from_user.id if message.from_user else 0
     key = f"{message.chat.id}-{message.id}"
     temp.FILES_ID[key] = files
     temp.CHAT[message.from_user.id] = message.chat.id
+    BUTTONS[key] = search
+
+    # Store meta for dynamic season/year/lang tabs
+    _META_STORE[key] = meta
 
     del_msg = (
         f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ "
@@ -410,17 +509,16 @@ async def auto_filter(client, msg, spoll=False):
     batch_link = f"batchfiles#{message.chat.id}#{message.id}#{message.from_user.id}"
 
     if offset and total_results >= int(MAX_BTN):
-        btn.insert(0, [InlineKeyboardButton("• ʟᴀɴɢᴜᴀɢᴇ •", callback_data=f"languages#{key}#{offset}#{req}")])
+        btn.insert(0, [InlineKeyboardButton("• ʟᴀɴɢᴜᴀɢᴇ •", callback_data=f"languages#{key}#{0}#{req}")])
         btn.insert(1, [
-            InlineKeyboardButton("• ǫᴜᴀʟɪᴛʏ •", callback_data=f"qualities#{key}#{offset}#{req}"),
-            InlineKeyboardButton("• sᴇᴀsᴏɴ •", callback_data=f"seasons#{key}#{offset}#{req}")
+            InlineKeyboardButton("• ǫᴜᴀʟɪᴛʏ •", callback_data=f"qualities#{key}#{0}#{req}"),
+            InlineKeyboardButton("• sᴇᴀsᴏɴ •", callback_data=f"seasons#{key}#{0}#{req}")
         ])
         btn.insert(2, [InlineKeyboardButton("• sᴇɴᴅ ᴀʟʟ •", callback_data=batch_link)])
-        BUTTONS[key] = search
         total_pages = math.ceil(total_results / int(MAX_BTN))
         btn.append([
             InlineKeyboardButton(f"1/{total_pages}", callback_data="pages"),
-            InlineKeyboardButton("ɴᴇxᴛ ⪼", callback_data=f"next_{req}_{key}_{offset}")
+            InlineKeyboardButton("ɴᴇxᴛ ⪼", callback_data=f"next_{req}_{key}_{int(MAX_BTN)}")
         ])
     else:
         btn.insert(0, [InlineKeyboardButton("• sᴇɴᴅ ᴀʟʟ •", callback_data=batch_link)])
@@ -435,37 +533,40 @@ async def auto_filter(client, msg, spoll=False):
     imdb_data = await get_poster(search, file=files[0]['file_name']) if settings.get("imdb") else None
 
     if imdb_data:
-        cap = settings['template'].format(
-            query=search,
-            title=imdb_data['title'],
-            votes=imdb_data['votes'],
-            aka=imdb_data["aka"],
-            seasons=imdb_data["seasons"],
-            box_office=imdb_data['box_office'],
-            localized_title=imdb_data['localized_title'],
-            kind=imdb_data['kind'],
-            imdb_id=imdb_data["imdb_id"],
-            cast=imdb_data["cast"],
-            runtime=imdb_data["runtime"],
-            countries=imdb_data["countries"],
-            certificates=imdb_data["certificates"],
-            languages=imdb_data["languages"],
-            director=imdb_data["director"],
-            writer=imdb_data["writer"],
-            producer=imdb_data["producer"],
-            composer=imdb_data["composer"],
-            cinematographer=imdb_data["cinematographer"],
-            music_team=imdb_data["music_team"],
-            distributors=imdb_data["distributors"],
-            release_date=imdb_data['release_date'],
-            year=imdb_data['year'],
-            genres=imdb_data['genres'],
-            poster=imdb_data['poster'],
-            plot=imdb_data['plot'],
-            rating=imdb_data['rating'],
-            url=imdb_data['url'],
-            **locals()
-        )
+        try:
+            cap = settings['template'].format(
+                query=search,
+                title=imdb_data['title'],
+                votes=imdb_data['votes'],
+                aka=imdb_data["aka"],
+                seasons=imdb_data["seasons"],
+                box_office=imdb_data['box_office'],
+                localized_title=imdb_data['localized_title'],
+                kind=imdb_data['kind'],
+                imdb_id=imdb_data["imdb_id"],
+                cast=imdb_data["cast"],
+                runtime=imdb_data["runtime"],
+                countries=imdb_data["countries"],
+                certificates=imdb_data["certificates"],
+                languages=imdb_data["languages"],
+                director=imdb_data["director"],
+                writer=imdb_data["writer"],
+                producer=imdb_data["producer"],
+                composer=imdb_data["composer"],
+                cinematographer=imdb_data["cinematographer"],
+                music_team=imdb_data["music_team"],
+                distributors=imdb_data["distributors"],
+                release_date=imdb_data['release_date'],
+                year=imdb_data['year'],
+                genres=imdb_data['genres'],
+                poster=imdb_data['poster'],
+                plot=imdb_data['plot'],
+                rating=imdb_data['rating'],
+                url=imdb_data['url'],
+                **locals()
+            )
+        except Exception:
+            cap = f"<b>📂 ʜᴇʀᴇ ɪ ꜰᴏᴜɴᴅ ꜰᴏʀ ʏᴏᴜʀ sᴇᴀʀᴄʜ {search}</b>"
     else:
         cap = f"<b>📂 ʜᴇʀᴇ ɪ ꜰᴏᴜɴᴅ ꜰᴏʀ ʏᴏᴜʀ sᴇᴀʀᴄʜ {search}</b>"
 
@@ -643,14 +744,25 @@ async def next_page(bot, query):
         if not search:
             return await query.answer(script.OLD_ALRT_TXT.format(query.from_user.first_name), show_alert=True)
 
-        cached_pages = get_cached_pages(search)
-        page_index = offset // int(MAX_BTN)
-        if cached_pages and page_index < len(cached_pages):
-            files, n_offset, total = cached_pages[page_index]
-        else:
-            files, n_offset, total = await get_search_results(search, offset=offset)
+        max_btn = int(MAX_BTN)
 
-        n_offset = int(n_offset) if n_offset else 0
+        # ── Instant page from cache (pure list slice — zero DB) ───────────────
+        files, n_offset, total = _get_page(search, offset, max_btn)
+        if files is None:
+            # Cache miss (expired) — re-fetch
+            all_files = await get_all_results(search)
+            if not all_files:
+                return await query.answer("No files found", show_alert=True)
+            meta = _extract_meta(all_files)
+            _cache_set(search, all_files, meta)
+            _META_STORE[key] = meta
+            files = all_files[offset:offset + max_btn]
+            total = len(all_files)
+            n_offset = offset + max_btn
+            if n_offset >= total:
+                n_offset = ''
+
+        n_offset_int = int(n_offset) if n_offset else 0
         if not files:
             return await query.answer("No files found", show_alert=True)
 
@@ -659,7 +771,6 @@ async def next_page(bot, query):
         temp.CHAT[query.from_user.id] = query.message.chat.id
 
         settings = await get_settings(query.message.chat.id)
-        max_btn = int(MAX_BTN)
         current_page = (offset // max_btn) + 1
         total_pages = math.ceil(total / max_btn)
 
@@ -693,8 +804,8 @@ async def next_page(bot, query):
         if offset > 0:
             nav_row.append(InlineKeyboardButton("⪻ ʙᴀᴄᴋ", callback_data=f"next_{req}_{key}_{max(0, offset - max_btn)}"))
         nav_row.append(InlineKeyboardButton(f"{current_page} / {total_pages}", callback_data="pages"))
-        if n_offset > 0:
-            nav_row.append(InlineKeyboardButton("ɴᴇxᴛ ⪼", callback_data=f"next_{req}_{key}_{n_offset}"))
+        if n_offset_int > 0:
+            nav_row.append(InlineKeyboardButton("ɴᴇxᴛ ⪼", callback_data=f"next_{req}_{key}_{n_offset_int}"))
         btn.append(nav_row)
 
         if settings.get("link"):
@@ -707,6 +818,7 @@ async def next_page(bot, query):
             await query.answer()
 
     except Exception as e:
+        logger.error(f"next_page error: {e}")
         await query.answer("Error processing request", show_alert=True)
 
 
@@ -716,16 +828,29 @@ async def seasons_cb_handler(client: Client, query: CallbackQuery):
     if int(req) != query.from_user.id:
         return await query.answer(script.ALRT_TXT, show_alert=True)
 
+    # Get seasons from extracted metadata (DB-derived, not hardcoded)
+    meta = _META_STORE.get(key, {})
+    available_seasons = meta.get("seasons", [])
+
+    if not available_seasons:
+        return await query.answer("⚠️ No seasons found for this search.", show_alert=True)
+
     btn = []
-    for i in range(0, len(SEASONS), 2):
-        text1, cb1 = SEASONS[i]
-        row = [InlineKeyboardButton(text1, callback_data=f"season_search#{cb1}#{key}#0#{offset}#{req}")]
-        if i + 1 < len(SEASONS):
-            text2, cb2 = SEASONS[i + 1]
-            row.append(InlineKeyboardButton(text2, callback_data=f"season_search#{cb2}#{key}#0#{offset}#{req}"))
+    row = []
+    for n in available_seasons:
+        label = f"Season {n}"
+        cb = f"S{n:02d}"
+        row.append(InlineKeyboardButton(label, callback_data=f"season_search#{cb}#{key}#0#{offset}#{req}"))
+        if len(row) == 2:
+            btn.append(row)
+            row = []
+    if row:
         btn.append(row)
     btn.append([InlineKeyboardButton("⪻ ʙᴀᴄᴋ ᴛᴏ ᴍᴀɪɴ ᴘᴀɢᴇ", callback_data=f"next_{req}_{key}_0")])
-    await query.message.edit_text("<b>ɪɴ ᴡʜɪᴄʜ sᴇᴀsᴏɴ ᴅᴏ ʏᴏᴜ ᴡᴀɴᴛ, ᴄʜᴏᴏsᴇ ꜰʀᴏᴍ ʜᴇʀᴇ ↓↓</b>", reply_markup=InlineKeyboardMarkup(btn))
+    await query.message.edit_text(
+        f"<b>📺 Available Seasons — choose one ↓↓</b>",
+        reply_markup=InlineKeyboardMarkup(btn)
+    )
 
 
 @Client.on_callback_query(filters.regex(r"^season_search#"))
@@ -739,25 +864,34 @@ async def season_search(client: Client, query: CallbackQuery):
 
     current_offset = int(offset)
     max_btn = int(MAX_BTN)
+
+    # All files from cache — zero DB call
+    entry = _cache_get(search)
+    if entry:
+        all_files = entry["files"]
+    else:
+        all_files = await get_all_results(search)
+        if all_files:
+            meta = _extract_meta(all_files)
+            _cache_set(search, all_files, meta)
+            _META_STORE[key] = meta
+
     try:
-        seas_num = int(season[1:])
-        seas = f"S0{seas_num}" if seas_num < 10 else f"S{seas_num}"
-        season_patterns = [seas, season]
+        seas_num = int(re.sub(r'[Ss]', '', season))
+        season_patterns = [
+            re.compile(rf'\bS{seas_num:02d}\b', re.IGNORECASE),
+            re.compile(rf'\bS{seas_num}\b', re.IGNORECASE),
+            re.compile(rf'\bSeason\s*{seas_num}\b', re.IGNORECASE),
+        ]
     except (ValueError, IndexError):
         return await query.answer("Invalid season format", show_alert=True)
 
-    cached_pages = get_cached_pages(search)
-    all_files = []
-    if cached_pages:
-        for page in cached_pages:
-            all_files.extend(page[0])
-    else:
-        batch_files, _, _ = await get_search_results(search)
-        all_files = batch_files
-
-    filtered_files = [f for f in all_files if any(re.search(p, f['file_name'], re.IGNORECASE) for p in season_patterns)]
+    filtered_files = [
+        f for f in all_files
+        if any(p.search(f.get('file_name', '') + ' ' + (f.get('caption') or '')) for p in season_patterns)
+    ]
     if not filtered_files:
-        return await query.answer(f"sᴏʀʀʏ {season.title()} ɴᴏᴛ ꜰᴏᴜɴᴅ ꜰᴏʀ {search.replace('_', ' ')}", show_alert=True)
+        return await query.answer(f"😔 Season {seas_num} not found for '{search}'", show_alert=True)
 
     page_files = filtered_files[current_offset:current_offset + max_btn]
     total_filtered = len(filtered_files)
@@ -767,17 +901,24 @@ async def season_search(client: Client, query: CallbackQuery):
     temp.CHAT[query.from_user.id] = query.message.chat.id
     settings = await get_settings(query.message.chat.id)
     cap = CAP.get(key, "")
-    del_msg = f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>" if settings.get("auto_delete") else ""
+    del_msg = (
+        f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>"
+        if settings.get("auto_delete") else ""
+    )
 
     if settings.get("link"):
         links = "".join([
-            f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>[{get_size(f['file_size'])}] {' '.join(filter(lambda x: not any(x.startswith(p) for p in ['[', '@', 'www.']), get_display_name(f).split()))}</a></b>"
+            f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>"
+            f"[{get_size(f['file_size'])}] {get_display_name(f)}</a></b>"
             for i, f in enumerate(page_files, current_offset + 1)
         ])
         btn = []
     else:
         links = ""
-        btn = [[InlineKeyboardButton(f"🔗 {get_size(f['file_size'])}≽ {formate_file_name(f['file_name'])}", callback_data=f"files#{query.from_user.id}#{f['_id']}")] for f in page_files]
+        btn = [[InlineKeyboardButton(
+            f"🔗 {get_size(f['file_size'])}≽ {formate_file_name(f['file_name'])}",
+            callback_data=f"files#{query.from_user.id}#{f['_id']}"
+        )] for f in page_files]
 
     btn.insert(0, [
         InlineKeyboardButton("• ǫᴜᴀʟɪᴛʏ •", callback_data=f"qualities#{key}#{current_offset}#{req}"),
@@ -791,10 +932,14 @@ async def season_search(client: Client, query: CallbackQuery):
     nav_row.append(InlineKeyboardButton(f"{current_page}/{total_pages}", callback_data="pages"))
     if current_offset + max_btn < total_filtered:
         nav_row.append(InlineKeyboardButton("ɴᴇxᴛ ⪼", callback_data=f"season_search#{season}#{key}#{current_offset + max_btn}#{original_offset}#{req}"))
-
     btn.append(nav_row if len(nav_row) > 1 else [InlineKeyboardButton("🚸 ɴᴏ ᴍᴏʀᴇ ᴘᴀɢᴇs 🚸", callback_data="buttons")])
     btn.append([InlineKeyboardButton("⪻ ʙᴀᴄᴋ ᴛᴏ ᴍᴀɪɴ ᴘᴀɢᴇ", callback_data=f"next_{req}_{key}_{original_offset}")])
-    await query.message.edit_text(cap + links + del_msg, disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML, reply_markup=InlineKeyboardMarkup(btn))
+    await query.message.edit_text(
+        cap + links + del_msg,
+        disable_web_page_preview=True,
+        parse_mode=enums.ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(btn)
+    )
 
 
 @Client.on_callback_query(filters.regex(r"^qualities#"))
@@ -803,19 +948,57 @@ async def quality_cb_handler(client: Client, query: CallbackQuery):
     if int(req) != query.from_user.id:
         return await query.answer(script.ALRT_TXT, show_alert=True)
 
+    search = BUTTONS.get(key)
+    if not search:
+        return await query.answer(script.OLD_ALRT_TXT.format(query.from_user.first_name), show_alert=True)
+
+    # Extract available qualities from cached full result set
+    entry = _cache_get(search)
+    all_files = entry["files"] if entry else []
+
+    _QUALITY_PATTERNS = [
+        ("4K / 2160p", r'\b(2160p|4k|uhd)\b'),
+        ("1080p", r'\b1080p\b'),
+        ("720p",  r'\b720p\b'),
+        ("480p",  r'\b480p\b'),
+        ("BluRay", r'\b(bluray|bdrip|remux)\b'),
+        ("WEB-DL", r'\b(web[\-\s]?dl|webdl)\b'),
+        ("WEBRip", r'\bwebrip\b'),
+        ("HDRip",  r'\bhdrip\b'),
+        ("DVDRip", r'\bdvdrip\b'),
+        ("HDTS / CAM", r'\b(hdts|ts|cam)\b'),
+    ]
+
+    available = []
+    for label, pattern in _QUALITY_PATTERNS:
+        regex = re.compile(pattern, re.IGNORECASE)
+        if any(regex.search(f.get("file_name", "") + " " + (f.get("caption") or "")) for f in all_files):
+            available.append((label, pattern))
+
+    if not available:
+        return await query.answer("⚠️ No quality info found for this search.", show_alert=True)
+
     btn = []
-    for i in range(0, len(QUALITIES), 2):
-        row = [InlineKeyboardButton(QUALITIES[i].title(), callback_data=f"quality_search#{QUALITIES[i].lower()}#{key}#0#{offset}#{req}")]
-        if i + 1 < len(QUALITIES):
-            row.append(InlineKeyboardButton(QUALITIES[i+1].title(), callback_data=f"quality_search#{QUALITIES[i+1].lower()}#{key}#0#{offset}#{req}"))
+    row = []
+    for label, pattern in available:
+        row.append(InlineKeyboardButton(label, callback_data=f"quality_search#{pattern}#{key}#0#{offset}#{req}"))
+        if len(row) == 2:
+            btn.append(row)
+            row = []
+    if row:
         btn.append(row)
     btn.append([InlineKeyboardButton("⪻ ʙᴀᴄᴋ ᴛᴏ ᴍᴀɪɴ ᴘᴀɢᴇ", callback_data=f"next_{req}_{key}_0")])
-    await query.message.edit_text("<b>ɪɴ ᴡʜɪᴄʜ ǫᴜᴀʟɪᴛʏ ᴅᴏ ʏᴏᴜ ᴡᴀɴᴛ, ᴄʜᴏᴏsᴇ ꜰʀᴏᴍ ʜᴇʀᴇ ↓↓</b>", reply_markup=InlineKeyboardMarkup(btn))
+    await query.message.edit_text(
+        "<b>🎬 Available Qualities — choose one ↓↓</b>",
+        reply_markup=InlineKeyboardMarkup(btn)
+    )
 
 
 @Client.on_callback_query(filters.regex(r"^quality_search#"))
 async def quality_search(client: Client, query: CallbackQuery):
-    _, qul, key, offset, original_offset, req = query.data.split("#")
+    parts = query.data.split("#")
+    # format: quality_search#{pattern}#{key}#{offset}#{original_offset}#{req}
+    _, qul, key, offset, original_offset, req = parts
     if int(req) != query.from_user.id:
         return await query.answer(script.ALRT_TXT, show_alert=True)
     search = BUTTONS.get(key)
@@ -824,18 +1007,28 @@ async def quality_search(client: Client, query: CallbackQuery):
 
     current_offset = int(offset)
     max_btn = int(MAX_BTN)
-    cached_pages = get_cached_pages(search)
-    all_files = []
-    if cached_pages:
-        for page in cached_pages:
-            all_files.extend(page[0])
-    else:
-        batch_files, _, _ = await get_search_results(search)
-        all_files = batch_files
 
-    filtered_files = [f for f in all_files if re.search(qul, f['file_name'], re.IGNORECASE)]
+    entry = _cache_get(search)
+    if entry:
+        all_files = entry["files"]
+    else:
+        all_files = await get_all_results(search)
+        if all_files:
+            meta = _extract_meta(all_files)
+            _cache_set(search, all_files, meta)
+            _META_STORE[key] = meta
+
+    try:
+        qul_re = re.compile(qul, re.IGNORECASE)
+    except re.error:
+        qul_re = re.compile(re.escape(qul), re.IGNORECASE)
+
+    filtered_files = [
+        f for f in all_files
+        if qul_re.search(f.get('file_name', '') + ' ' + (f.get('caption') or ''))
+    ]
     if not filtered_files:
-        return await query.answer(f"sᴏʀʀʏ {qul.title()} ɴᴏᴛ ꜰᴏᴜɴᴅ ꜰᴏʀ {search.replace('_', ' ')}", show_alert=True)
+        return await query.answer(f"😔 No files found with that quality.", show_alert=True)
 
     page_files = filtered_files[current_offset:current_offset + max_btn]
     total_filtered = len(filtered_files)
@@ -845,17 +1038,24 @@ async def quality_search(client: Client, query: CallbackQuery):
     temp.CHAT[query.from_user.id] = query.message.chat.id
     settings = await get_settings(query.message.chat.id)
     cap = CAP.get(key, "")
-    del_msg = f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>" if settings.get("auto_delete") else ""
+    del_msg = (
+        f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>"
+        if settings.get("auto_delete") else ""
+    )
 
     if settings.get("link"):
         links = "".join([
-            f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>[{get_size(f['file_size'])}] {' '.join(filter(lambda x: not any(x.startswith(p) for p in ['[', '@', 'www.']), get_display_name(f).split()))}</a></b>"
+            f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>"
+            f"[{get_size(f['file_size'])}] {get_display_name(f)}</a></b>"
             for i, f in enumerate(page_files, current_offset + 1)
         ])
         btn = []
     else:
         links = ""
-        btn = [[InlineKeyboardButton(f"🔗 {get_size(f['file_size'])}≽ {formate_file_name(f['file_name'])}", callback_data=f"files#{query.from_user.id}#{f['_id']}")] for f in page_files]
+        btn = [[InlineKeyboardButton(
+            f"🔗 {get_size(f['file_size'])}≽ {formate_file_name(f['file_name'])}",
+            callback_data=f"files#{query.from_user.id}#{f['_id']}"
+        )] for f in page_files]
 
     btn.insert(0, [
         InlineKeyboardButton("• ʟᴀɴɢᴜᴀɢᴇ •", callback_data=f"languages#{key}#{current_offset}#{req}"),
@@ -869,10 +1069,14 @@ async def quality_search(client: Client, query: CallbackQuery):
     nav_row.append(InlineKeyboardButton(f"{current_page}/{total_pages}", callback_data="pages"))
     if current_offset + max_btn < total_filtered:
         nav_row.append(InlineKeyboardButton("ɴᴇxᴛ ⪼", callback_data=f"quality_search#{qul}#{key}#{current_offset + max_btn}#{original_offset}#{req}"))
-
     btn.append(nav_row if len(nav_row) > 1 else [InlineKeyboardButton("🚸 ɴᴏ ᴍᴏʀᴇ ᴘᴀɢᴇs 🚸", callback_data="buttons")])
     btn.append([InlineKeyboardButton("⪻ ʙᴀᴄᴋ ᴛᴏ ᴍᴀɪɴ ᴘᴀɢᴇ", callback_data=f"next_{req}_{key}_{original_offset}")])
-    await query.message.edit_text(cap + links + del_msg, disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML, reply_markup=InlineKeyboardMarkup(btn))
+    await query.message.edit_text(
+        cap + links + del_msg,
+        disable_web_page_preview=True,
+        parse_mode=enums.ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(btn)
+    )
 
 
 @Client.on_callback_query(filters.regex(r"^languages#"))
@@ -881,14 +1085,38 @@ async def languages_cb_handler(client: Client, query: CallbackQuery):
         _, key, offset, req = query.data.split("#")
         if int(req) != query.from_user.id:
             return await query.answer(script.ALRT_TXT, show_alert=True)
+
+        # Get languages from extracted metadata (DB-derived)
+        meta = _META_STORE.get(key, {})
+        available_langs = meta.get("languages", [])
+
+        if not available_langs:
+            return await query.answer("⚠️ No language info found for this search.", show_alert=True)
+
+        _LANG_DISPLAY = {
+            'hindi': '🇮🇳 Hindi', 'english': '🇬🇧 English',
+            'tamil': '🌊 Tamil', 'telugu': '🌟 Telugu',
+            'malayalam': '🌴 Malayalam', 'kannada': '🏔️ Kannada',
+            'punjabi': '🎵 Punjabi', 'bengali': '🎭 Bengali',
+            'gujarati': '🪔 Gujarati', 'marathi': '🎪 Marathi',
+            'dual': '🔊 Dual Audio', 'multi': '🌐 Multi Audio',
+        }
+
         btn = []
-        for i in range(0, len(LANGUAGES), 2):
-            row = [InlineKeyboardButton(LANGUAGES[i][0], callback_data=f"lang_search#{LANGUAGES[i][1]}#{key}#0#{offset}#{req}")]
-            if i + 1 < len(LANGUAGES):
-                row.append(InlineKeyboardButton(LANGUAGES[i+1][0], callback_data=f"lang_search#{LANGUAGES[i+1][1]}#{key}#0#{offset}#{req}"))
+        row = []
+        for lang in available_langs:
+            label = _LANG_DISPLAY.get(lang, lang.title())
+            row.append(InlineKeyboardButton(label, callback_data=f"lang_search#{lang}#{key}#0#{offset}#{req}"))
+            if len(row) == 2:
+                btn.append(row)
+                row = []
+        if row:
             btn.append(row)
         btn.append([InlineKeyboardButton("⪻ ʙᴀᴄᴋ ᴛᴏ ᴍᴀɪɴ ᴘᴀɢᴇ", callback_data=f"next_{req}_{key}_0")])
-        await query.message.edit_text("<b>ɪɴ ᴡʜɪᴄʜ ʟᴀɴɢᴜᴀɢᴇ ᴅᴏ ʏᴏᴜ ᴡᴀɴᴛ, ᴄʜᴏᴏsᴇ ꜰʀᴏᴍ ʜᴇʀᴇ ↓↓</b>", reply_markup=InlineKeyboardMarkup(btn))
+        await query.message.edit_text(
+            "<b>🌐 Available Languages — choose one ↓↓</b>",
+            reply_markup=InlineKeyboardMarkup(btn)
+        )
     except Exception:
         await query.answer("Error processing request", show_alert=True)
 
@@ -904,20 +1132,24 @@ async def lang_search(client: Client, query: CallbackQuery):
 
     current_offset = int(offset)
     max_btn = int(MAX_BTN)
-    lang_patterns = [lang, lang[:3]]
 
-    cached_pages = get_cached_pages(search)
-    all_files = []
-    if cached_pages:
-        for page in cached_pages:
-            all_files.extend(page[0])
+    entry = _cache_get(search)
+    if entry:
+        all_files = entry["files"]
     else:
-        batch_files, _, _ = await get_search_results(search)
-        all_files = batch_files
+        all_files = await get_all_results(search)
+        if all_files:
+            meta = _extract_meta(all_files)
+            _cache_set(search, all_files, meta)
+            _META_STORE[key] = meta
 
-    filtered_files = [f for f in all_files if any(re.search(p, f['file_name'], re.IGNORECASE) for p in lang_patterns)]
+    lang_re = re.compile(r'\b' + re.escape(lang) + r'\b', re.IGNORECASE)
+    filtered_files = [
+        f for f in all_files
+        if lang_re.search(f.get('file_name', '') + ' ' + (f.get('caption') or ''))
+    ]
     if not filtered_files:
-        return await query.answer(f"sᴏʀʀʏ ʟᴀɴɢᴜᴀɢᴇ {lang.title()} ɴᴏᴛ ꜰᴏᴜɴᴅ ꜰᴏʀ {search.replace('_', ' ')}", show_alert=True)
+        return await query.answer(f"😔 No {lang.title()} files found for '{search}'", show_alert=True)
 
     page_files = filtered_files[current_offset:current_offset + max_btn]
     total_filtered = len(filtered_files)
@@ -927,17 +1159,24 @@ async def lang_search(client: Client, query: CallbackQuery):
     temp.CHAT[query.from_user.id] = query.message.chat.id
     settings = await get_settings(query.message.chat.id)
     cap = CAP.get(key, "")
-    del_msg = f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>" if settings.get("auto_delete") else ""
+    del_msg = (
+        f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>"
+        if settings.get("auto_delete") else ""
+    )
 
     if settings.get("link"):
         links = "".join([
-            f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>[{get_size(f['file_size'])}] {' '.join(filter(lambda x: not any(x.startswith(p) for p in ['[', '@', 'www.']), get_display_name(f).split()))}</a></b>"
+            f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>"
+            f"[{get_size(f['file_size'])}] {get_display_name(f)}</a></b>"
             for i, f in enumerate(page_files, current_offset + 1)
         ])
         btn = []
     else:
         links = ""
-        btn = [[InlineKeyboardButton(f"🔗 {get_size(f['file_size'])}≽ {formate_file_name(f['file_name'])}", callback_data=f"files#{query.from_user.id}#{f['_id']}")] for f in page_files]
+        btn = [[InlineKeyboardButton(
+            f"🔗 {get_size(f['file_size'])}≽ {formate_file_name(f['file_name'])}",
+            callback_data=f"files#{query.from_user.id}#{f['_id']}"
+        )] for f in page_files]
 
     btn.insert(0, [
         InlineKeyboardButton("• sᴇᴀsᴏɴ •", callback_data=f"seasons#{key}#{current_offset}#{req}"),
@@ -951,10 +1190,14 @@ async def lang_search(client: Client, query: CallbackQuery):
     nav_row.append(InlineKeyboardButton(f"{current_page}/{total_pages}", callback_data="pages"))
     if current_offset + max_btn < total_filtered:
         nav_row.append(InlineKeyboardButton("ɴᴇxᴛ ⪼", callback_data=f"lang_search#{lang}#{key}#{current_offset + max_btn}#{original_offset}#{req}"))
-
     btn.append(nav_row if len(nav_row) > 1 else [InlineKeyboardButton("🚸 ɴᴏ ᴍᴏʀᴇ ᴘᴀɢᴇs 🚸", callback_data="buttons")])
     btn.append([InlineKeyboardButton("⪻ ʙᴀᴄᴋ ᴛᴏ ᴍᴀɪɴ ᴘᴀɢᴇ", callback_data=f"next_{req}_{key}_{original_offset}")])
-    await query.message.edit_text(cap + links + del_msg, disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML, reply_markup=InlineKeyboardMarkup(btn))
+    await query.message.edit_text(
+        cap + links + del_msg,
+        disable_web_page_preview=True,
+        parse_mode=enums.ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(btn)
+    )
 
 
 @Client.on_callback_query(filters.regex(r"^spol"))
