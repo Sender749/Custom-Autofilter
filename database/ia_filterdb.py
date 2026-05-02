@@ -969,3 +969,38 @@ async def set_filter_words(words):
         )
     except Exception as e:
         logger.error(f"Error setting filter words: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FULL RESULT FETCH — for smart cache (returns all ranked results at once)
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def get_all_results(query: str) -> list:
+    """
+    Fetch and rank ALL results for a query in one shot.
+    Called once per unique query; result list is stored in RESULT_CACHE.
+    Subsequent page requests just slice this list — zero extra DB calls.
+    """
+    query = str(query).strip()
+    filter_words = await get_filter_words()
+
+    pq = parse_query(query)
+    norm = clean_query(pq.normalized, filter_words)
+    if not norm:
+        return []
+
+    pq = parse_query(norm)
+    patterns = _build_regex_patterns(pq)
+
+    or_clauses = []
+    for pat in patterns:
+        if USE_CAPTION_FILTER:
+            or_clauses.append({'file_name': pat})
+            or_clauses.append({'caption': pat})
+        else:
+            or_clauses.append({'file_name': pat})
+
+    filter_dict = {'$or': or_clauses} if or_clauses else ({'file_name': patterns[0]} if patterns else {})
+
+    results = await asyncio.to_thread(_do_search, filter_dict)
+    return rank_results(norm, results, pq)
