@@ -258,8 +258,54 @@ def parse_query(query: str) -> ParsedQuery:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def normalize_query(query: str) -> str:
-    """Public entry point: return normalised query string for Stage 1."""
-    return parse_query(query).normalized
+    """
+    Normalise query for Stage 1 DB search.
+    Converts all season/episode notations to compact SxxExx format.
+    Handles: season 2, s02, s2, s 2, s2e3, s 2 e 3, s02e03 etc.
+    Does NOT strip year, language, or any user words — only normalises SE tokens.
+    """
+    q = query.strip()
+
+    # Written: "season 2 episode 3" → "s02e03"
+    q = re.sub(
+        r'\bseason\s*(\d{1,2})\s+(?:episode|ep)\s*(\d{1,3})\b',
+        lambda m: f"s{int(m.group(1)):02d}e{int(m.group(2)):02d}",
+        q, flags=re.IGNORECASE
+    )
+    # Written: "season 2" → "s02"
+    q = re.sub(
+        r'\bseason\s*(\d{1,2})\b',
+        lambda m: f"s{int(m.group(1)):02d}",
+        q, flags=re.IGNORECASE
+    )
+    # Written: "episode 3" / "ep 3" → "e03"
+    q = re.sub(
+        r'\b(?:episode|ep)\s*(\d{1,3})\b',
+        lambda m: f"e{int(m.group(1)):02d}",
+        q, flags=re.IGNORECASE
+    )
+    # Compact combined: "s2e3", "s 2 e 3", "s2 e3" → "s02e03" (BEFORE standalone s\d)
+    q = re.sub(
+        r'\bs\s*(\d{1,2})\s*e\s*(\d{1,3})\b',
+        lambda m: f"s{int(m.group(1)):02d}e{int(m.group(2)):02d}",
+        q, flags=re.IGNORECASE
+    )
+    # Compact standalone: "s2", "s 2" → "s02"
+    q = re.sub(
+        r'\bs\s*(\d{1,2})\b',
+        lambda m: f"s{int(m.group(1)):02d}",
+        q, flags=re.IGNORECASE
+    )
+    # Compact standalone: "e3", "e 3" → "e03"
+    q = re.sub(
+        r'\be\s*(\d{1,3})\b',
+        lambda m: f"e{int(m.group(1)):02d}",
+        q, flags=re.IGNORECASE
+    )
+    # Merge any remaining "s02 e03" → "s02e03"
+    q = re.sub(r'\b(s\d{2})\s+(e\d{2,3})\b', r'\1\2', q, flags=re.IGNORECASE)
+
+    return ' '.join(q.split()).strip()
 
 
 def clean_query(query: str, filter_words: set) -> str:
@@ -559,6 +605,56 @@ def _build_regex_patterns(pq: ParsedQuery) -> list:
     return patterns if patterns else [re.compile(re.escape(norm), re.IGNORECASE)]
 
 
+def _build_regex_patterns_from_norm(norm: str, pq: ParsedQuery) -> list:
+    """
+    Build search regex patterns from the already-normalised query string.
+    Much faster than parse_query-based version since norm is already clean.
+
+    Generates up to 3 complementary patterns:
+      P1 — collapsed (handles dom's/doms, S.W.A.T/SWAT, B A S S/BASS)
+      P2 — all words present, order-independent (word-boundary lookaheads)
+      P3 — exact phrase match
+
+    All three go into a single MongoDB $or — one DB round-trip.
+    """
+    patterns = []
+    if not norm:
+        return [re.compile('.', re.IGNORECASE)]
+
+    # P1: collapsed match — ignores all non-alnum between chars
+    title_for_collapse = pq.title_only if pq.title_only else norm
+    collapsed = _collapse(title_for_collapse)
+    if collapsed:
+        spaced = r'[\W_]*'.join(re.escape(c) for c in collapsed)
+        try:
+            patterns.append(re.compile(spaced, re.IGNORECASE))
+        except Exception:
+            pass
+
+    # P2: all meaningful words must be present (order-independent)
+    words = [w for w in norm.split() if len(w) > 1]
+    if words:
+        lookaheads = ''.join(r'(?=.*\b' + re.escape(w) + r'\b)' for w in words)
+        try:
+            patterns.append(re.compile(lookaheads + '.*', re.IGNORECASE))
+        except Exception:
+            pass
+
+    # P3: exact normalised phrase
+    try:
+        if ' ' not in norm:
+            patterns.append(re.compile(
+                r'(\b|[._\-+\[\]()\s])' + re.escape(norm) + r'(\b|[._\-+\[\]()\s]|$)',
+                re.IGNORECASE
+            ))
+        else:
+            patterns.append(re.compile(re.escape(norm), re.IGNORECASE))
+    except Exception:
+        pass
+
+    return patterns if patterns else [re.compile(re.escape(norm), re.IGNORECASE)]
+
+
 def _do_search(filter_dict) -> list:
     """Blocking MongoDB search — always run via asyncio.to_thread."""
     result_map = {}
@@ -587,24 +683,20 @@ async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
     query = str(query).strip()
     filter_words = await get_filter_words()
 
-    pq = parse_query(query)
-    norm = clean_query(pq.normalized, filter_words)
+    # Normalise SE notation, strip filter_words, keep year/lang/all user words
+    norm = normalize_query(query)
+    norm = clean_query(norm, filter_words)
     if not norm:
         return [], '', 0
 
-    # Rebuild pq with cleaned norm
     pq = parse_query(norm)
+    patterns = _build_regex_patterns_from_norm(norm, pq)
 
-    patterns = _build_regex_patterns(pq)
-
-    # Build a single $or across all patterns (both file_name and caption)
+    # Always search both file_name and caption
     or_clauses = []
     for pat in patterns:
-        if USE_CAPTION_FILTER:
-            or_clauses.append({'file_name': pat})
-            or_clauses.append({'caption': pat})
-        else:
-            or_clauses.append({'file_name': pat})
+        or_clauses.append({'file_name': pat})
+        or_clauses.append({'caption': pat})
 
     filter_dict = {'$or': or_clauses} if or_clauses else ({'file_name': patterns[0]} if patterns else {})
 
@@ -1084,27 +1176,35 @@ async def set_filter_words(words):
 async def get_all_results(query: str) -> list:
     """
     Fetch and rank ALL results for a query in one shot.
-    Called once per unique query; result list is stored in RESULT_CACHE.
-    Subsequent page requests just slice this list — zero extra DB calls.
+
+    Search strategy:
+      1. Normalise SE tokens only (season/episode → s02e03 format).
+      2. Strip filter_words from the normalised query.
+      3. Search DB using the FULL remaining query — year, language, etc. included.
+         User intent is preserved: "ironman 2008" searches for "ironman 2008".
+      4. Rank results with multi-factor scoring.
+    Always searches both file_name and caption.
     """
     query = str(query).strip()
     filter_words = await get_filter_words()
 
-    pq = parse_query(query)
-    norm = clean_query(pq.normalized, filter_words)
+    # Normalise SE notation only — keep year, language, all user words
+    norm = normalize_query(query)
+    # Strip filter_words (bot-admin defined words to ignore)
+    norm = clean_query(norm, filter_words)
     if not norm:
         return []
 
+    # Parse for ranking metadata (year, season, lang etc.)
     pq = parse_query(norm)
-    patterns = _build_regex_patterns(pq)
+    # Build search patterns from the full normalised query
+    patterns = _build_regex_patterns_from_norm(norm, pq)
 
+    # Always search both file_name and caption
     or_clauses = []
     for pat in patterns:
-        if USE_CAPTION_FILTER:
-            or_clauses.append({'file_name': pat})
-            or_clauses.append({'caption': pat})
-        else:
-            or_clauses.append({'file_name': pat})
+        or_clauses.append({'file_name': pat})
+        or_clauses.append({'caption': pat})
 
     filter_dict = {'$or': or_clauses} if or_clauses else ({'file_name': patterns[0]} if patterns else {})
 
