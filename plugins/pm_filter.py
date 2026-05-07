@@ -501,7 +501,7 @@ async def auto_filter(client, msg, spoll=False):
         links = ""
         btn = [[
             InlineKeyboardButton(
-                f"🔗 {get_size(f['file_size'])}≽ {formate_file_name(f['file_name'])}",
+                f"🔗 {get_size(f['file_size'])}≽ {formate_file_name(get_display_name(f))}",
                 url=f"https://telegram.dog/{temp.U_NAME}?start=file_{message.chat.id}_{f['_id']}"
             )
         ] for f in files]
@@ -782,14 +782,14 @@ async def next_page(bot, query):
         if settings.get("link"):
             links = "".join([
                 f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>"
-                f"[{get_size(f['file_size'])}] {' '.join(filter(lambda x: not any(x.startswith(p) for p in ['[', '@', 'www.']), get_display_name(f).split()))}</a></b>"
+                f"[{get_size(f['file_size'])}] {get_display_name(f)}</a></b>"
                 for i, f in enumerate(files, offset + 1)
             ])
             btn = []
         else:
             links = ""
             btn = [[InlineKeyboardButton(
-                f"📁 {get_size(f['file_size'])}≽ {formate_file_name(f['file_name'])}",
+                f"📁 {get_size(f['file_size'])}≽ {formate_file_name(get_display_name(f))}",
                 url=f"https://telegram.dog/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}"
             )] for f in files]
 
@@ -942,6 +942,22 @@ async def season_search(client: Client, query: CallbackQuery):
     )
 
 
+# Short quality code → regex pattern mapping (keeps callback_data under 64 bytes)
+_QUALITY_CODE_MAP = {
+    "4k":     (r'\b(2160p|4k|uhd)\b',          "4K / 2160p"),
+    "1080p":  (r'\b1080p\b',                    "1080p"),
+    "720p":   (r'\b720p\b',                     "720p"),
+    "480p":   (r'\b480p\b',                     "480p"),
+    "bluray": (r'\b(bluray|bdrip|remux)\b',     "BluRay / BDRip"),
+    "webdl":  (r'\b(web[\-\s]?dl|webdl)\b',  "WEB-DL"),
+    "webrip": (r'\bwebrip\b',                   "WEBRip"),
+    "hdrip":  (r'\bhdrip\b',                    "HDRip"),
+    "dvdrip": (r'\bdvdrip\b',                   "DVDRip"),
+    "cam":    (r'\b(hdts|ts|cam|pdvd)\b',       "HDTS / CAM"),
+}
+
+
+@Client.on_callback_query(filters.regex(r"^qualities#"))
 @Client.on_callback_query(filters.regex(r"^qualities#"))
 async def quality_cb_handler(client: Client, query: CallbackQuery):
     _, key, offset, req = query.data.split("#")
@@ -952,36 +968,32 @@ async def quality_cb_handler(client: Client, query: CallbackQuery):
     if not search:
         return await query.answer(script.OLD_ALRT_TXT.format(query.from_user.first_name), show_alert=True)
 
-    # Extract available qualities from cached full result set
+    # Get all files from cache — no DB call needed
     entry = _cache_get(search)
     all_files = entry["files"] if entry else []
 
-    _QUALITY_PATTERNS = [
-        ("4K / 2160p", r'\b(2160p|4k|uhd)\b'),
-        ("1080p", r'\b1080p\b'),
-        ("720p",  r'\b720p\b'),
-        ("480p",  r'\b480p\b'),
-        ("BluRay", r'\b(bluray|bdrip|remux)\b'),
-        ("WEB-DL", r'\b(web[\-\s]?dl|webdl)\b'),
-        ("WEBRip", r'\bwebrip\b'),
-        ("HDRip",  r'\bhdrip\b'),
-        ("DVDRip", r'\bdvdrip\b'),
-        ("HDTS / CAM", r'\b(hdts|ts|cam)\b'),
-    ]
+    if not all_files:
+        return await query.answer("⚠️ No quality info found for this search.", show_alert=True)
 
+    # Find which quality codes actually appear in the result set
     available = []
-    for label, pattern in _QUALITY_PATTERNS:
+    for code, (pattern, label) in _QUALITY_CODE_MAP.items():
         regex = re.compile(pattern, re.IGNORECASE)
-        if any(regex.search(f.get("file_name", "") + " " + (f.get("caption") or "")) for f in all_files):
-            available.append((label, pattern))
+        if any(
+            regex.search((f.get("file_name") or "") + " " + (f.get("caption") or ""))
+            for f in all_files
+        ):
+            available.append((code, label))
 
     if not available:
         return await query.answer("⚠️ No quality info found for this search.", show_alert=True)
 
+    # Build buttons using short code — callback_data stays well under 64 bytes
     btn = []
     row = []
-    for label, pattern in available:
-        row.append(InlineKeyboardButton(label, callback_data=f"quality_search#{pattern}#{key}#0#{offset}#{req}"))
+    for code, label in available:
+        cb = f"quality_search#{code}#{key}#0#{offset}#{req}"
+        row.append(InlineKeyboardButton(label, callback_data=cb))
         if len(row) == 2:
             btn.append(row)
             row = []
@@ -997,8 +1009,8 @@ async def quality_cb_handler(client: Client, query: CallbackQuery):
 @Client.on_callback_query(filters.regex(r"^quality_search#"))
 async def quality_search(client: Client, query: CallbackQuery):
     parts = query.data.split("#")
-    # format: quality_search#{pattern}#{key}#{offset}#{original_offset}#{req}
-    _, qul, key, offset, original_offset, req = parts
+    # format: quality_search#{code}#{key}#{offset}#{original_offset}#{req}
+    _, code, key, offset, original_offset, req = parts
     if int(req) != query.from_user.id:
         return await query.answer(script.ALRT_TXT, show_alert=True)
     search = BUTTONS.get(key)
@@ -1018,14 +1030,19 @@ async def quality_search(client: Client, query: CallbackQuery):
             _cache_set(search, all_files, meta)
             _META_STORE[key] = meta
 
-    try:
-        qul_re = re.compile(qul, re.IGNORECASE)
-    except re.error:
-        qul_re = re.compile(re.escape(qul), re.IGNORECASE)
+    # Look up the real regex pattern from the short code
+    quality_entry = _QUALITY_CODE_MAP.get(code)
+    if quality_entry:
+        pattern, _ = quality_entry
+        qul_re = re.compile(pattern, re.IGNORECASE)
+    else:
+        # Fallback: treat code as literal search term
+        qul_re = re.compile(re.escape(code), re.IGNORECASE)
+    qul = code  # keep for nav callbacks
 
     filtered_files = [
         f for f in all_files
-        if qul_re.search(f.get('file_name', '') + ' ' + (f.get('caption') or ''))
+        if qul_re.search((f.get('file_name') or '') + ' ' + (f.get('caption') or ''))
     ]
     if not filtered_files:
         return await query.answer(f"😔 No files found with that quality.", show_alert=True)
