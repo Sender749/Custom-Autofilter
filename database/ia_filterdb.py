@@ -1210,3 +1210,95 @@ async def get_all_results(query: str) -> list:
 
     results = await asyncio.to_thread(_do_search, filter_dict)
     return rank_results(norm, results, pq)
+
+import asyncio
+import logging
+from pyrogram import Client, filters
+from info import DELETE_CHANNELS, LOG_CHANNEL
+from database.ia_filterdb import (
+    is_second_db_configured, collection, second_collection, unpack_new_file_id
+)
+
+logger = logging.getLogger(__name__)
+
+# Match any media type so admin can delete any file from DELETE_CHANNELS
+media_filter = filters.document | filters.video | filters.audio | filters.photo
+
+
+@Client.on_message(filters.chat(DELETE_CHANNELS) & media_filter)
+async def deletemultiplemedia(bot, message):
+    """
+    When admin sends a file to a DELETE_CHANNEL, bot finds that file in the
+    database by its unpacked file_id and deletes it.
+
+    Fixes vs original:
+      - Uses asyncio.to_thread for pymongo (sync) delete — no more TypeError
+        from awaiting a non-coroutine.
+      - Accepts all media types (document, video, audio, photo), not just mp4/mkv.
+      - Sends confirmation reply to admin.
+    """
+    # Determine which media attribute is present
+    media = None
+    for attr in ("video", "document", "audio", "photo", "animation"):
+        media = getattr(message, attr, None)
+        if media:
+            break
+
+    if not media:
+        return
+
+    file_name = getattr(media, "file_name", None) or getattr(media, "file_unique_id", "unknown")
+
+    try:
+        file_id = unpack_new_file_id(media.file_id)
+    except Exception as e:
+        logger.error(f"deleteFiles: could not unpack file_id for {file_name}: {e}")
+        return
+
+    deleted_count = await _delete_file_by_id(file_id)
+
+    if deleted_count:
+        logger.info(f"deleteFiles: deleted '{file_name}' (id={file_id}) from database")
+        try:
+            await message.reply_text(
+                f"✅ <b>File deleted from database!</b>\n"
+                f"📄 <code>{file_name}</code>",
+                quote=True
+            )
+        except Exception:
+            pass
+    else:
+        logger.warning(f"deleteFiles: '{file_name}' (id={file_id}) not found in database")
+        try:
+            await message.reply_text(
+                f"⚠️ <b>File not found in database.</b>\n"
+                f"📄 <code>{file_name}</code>",
+                quote=True
+            )
+        except Exception:
+            pass
+
+
+async def _delete_file_by_id(file_id: str) -> int:
+    """
+    Delete a file from primary (and secondary) DB by _id.
+    Runs pymongo delete_one in a thread pool to avoid blocking the event loop.
+    """
+    def _do_delete():
+        total = 0
+        try:
+            r1 = collection.delete_one({"_id": file_id})
+            total += r1.deleted_count
+        except Exception as e:
+            logger.error(f"deleteFiles primary delete error: {e}")
+
+        if is_second_db_configured():
+            try:
+                r2 = second_collection.delete_one({"_id": file_id})
+                total += r2.deleted_count
+            except Exception as e:
+                logger.error(f"deleteFiles secondary delete error: {e}")
+
+        return total
+
+    return await asyncio.to_thread(_do_delete)
