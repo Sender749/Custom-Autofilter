@@ -470,15 +470,37 @@ def rank_results(query: str, files: list, pq: 'ParsedQuery | None' = None) -> li
         f_words     = set(f_stripped.split())
 
         # ── Tier 1: exact title match ────────────────────────────────────────
-        # Collapsed match handles: dom's==doms, S.W.A.T==SWAT, B A S S==BASS
+        # Compare STRIPPED titles (no tech/quality/lang tags) so:
+        #   query="you" → q_stripped="you"
+        #   file="You (2018) S01E01 Hindi 1080p" → f_stripped="you" → EXACT match
+        #   file="You Are Teenager 2022" → f_stripped="you are teenager" → PREFIX only
+        # This correctly puts "you" above "you are teenager"
         exact = 0
-        if f_collapsed == q_collapsed:
+
+        # Collapsed equality on stripped titles (handles dom's, S.W.A.T, B A S S)
+        f_stripped_collapsed = _collapse(f_stripped)
+        q_stripped_collapsed = _collapse(q_stripped)
+
+        if f_stripped_collapsed == q_stripped_collapsed:
+            # Stripped titles match exactly — true title match regardless of quality tags
             exact = 10000
-        elif q_collapsed and f_collapsed.startswith(q_collapsed):
-            # e.g. query="you" file="you s01e01..." → prefix match
-            exact = 8000
-        elif q_collapsed in f_collapsed:
-            exact = 5000
+        elif q_stripped_collapsed and f_stripped_collapsed == q_stripped_collapsed:
+            exact = 10000
+        elif f_collapsed == q_collapsed:
+            # Full collapsed match (short titles like "you", "us", "it")
+            exact = 9000
+        elif q_words and all(w in f_words for w in q_words) and len(f_words) == len(q_words):
+            # All query words match AND file has same word count → strong title match
+            exact = 8500
+        elif q_words and all(w in f_words for w in q_words):
+            # All query words present — file may have extra tech words
+            exact = 7000
+        elif q_collapsed and f_stripped_collapsed.startswith(q_stripped_collapsed):
+            # File stripped title starts with query (word-level prefix)
+            exact = 6000
+        elif q_collapsed in f_stripped_collapsed:
+            # Query found within stripped title
+            exact = 4000
 
         # Word overlap as base score (0–3000)
         overlap = _word_overlap(text)
@@ -825,6 +847,32 @@ def _per_word_score(query_words: list, candidate_words: list) -> int:
     return total // len(query_words)
 
 
+_TITLE_CUT_RE = re.compile(
+    r'\b(\d{3,4}p|4k|uhd|hdr|bluray|bdrip|remux|web[\-\s]?dl|webrip|hdrip|'
+    r'dvdrip|cam|ts|hdts|x264|x265|hevc|avc|aac|ac3|dts|flac|mp3|'
+    r'esub|subs?|dubbed|19\d{2}|20[0-3]\d|'
+    r's\d{2}e\d{2,3})\b',
+    re.IGNORECASE
+)
+_TITLE_PUNCT_RE = re.compile(r'[.\-_\+\[\]()]+')
+
+
+def _extract_clean_title(filename: str) -> str:
+    """
+    Extract just the movie/series title from a full technical filename.
+    "Shiddat 2021 480p Hindi BluRay" -> "Shiddat"
+    "Loki S02E01 1080p WEBRip"       -> "Loki"
+    "You S01E01 Hindi"               -> "You"
+    """
+    fn = re.sub(r'\.\w{2,4}$', '', filename).strip()
+    m = _TITLE_CUT_RE.search(fn)
+    if m:
+        fn = fn[:m.start()].strip()
+    fn = _TITLE_PUNCT_RE.sub(' ', fn)
+    fn = re.sub(r'\s{2,}', ' ', fn)
+    return fn.strip() or filename
+
+
 async def ai_spell_check(wrong_name: str) -> str | None:
     """
     Stage 2 — Strict word-preserving spell correction.
@@ -905,11 +953,14 @@ async def ai_spell_check(wrong_name: str) -> str | None:
         for score, stripped_clean, original in candidates[:15]:
             files, _, _ = await get_search_results(original)
             if files:
+                # Return the clean stripped title (not the full technical filename)
+                # so the bot searches for "Shiddat" not "Shiddat 2021 480p Hindi mkv"
+                clean_title = _extract_clean_title(original)
                 logger.info(
-                    "ai_spell_check[DB per-word=%d]: '%s' → '%s'",
-                    score, raw, original
+                    "ai_spell_check[DB per-word=%d]: '%s' → '%s' (from '%s')",
+                    score, raw, clean_title, original
                 )
-                return original
+                return clean_title
 
     except Exception as exc:
         logger.debug("ai_spell_check Phase A error: %s", exc)
@@ -954,7 +1005,9 @@ async def ai_spell_check(wrong_name: str) -> str | None:
 
         scored.sort(key=lambda x: -x[0])
         for score, title in scored:
-            for candidate in list(dict.fromkeys([title, _strip_year_suffix(title)])):
+            # TMDB already returns clean titles — just strip year suffix
+            clean = _strip_year_suffix(title)
+            for candidate in list(dict.fromkeys([clean, title])):
                 files, _, _ = await get_search_results(candidate)
                 if files:
                     logger.info(
@@ -1149,13 +1202,24 @@ def unpack_new_file_id(new_file_id):
     return file_id
 
 
+_FILTER_WORDS_CACHE: set = set()
+_FILTER_WORDS_CACHE_TIME: float = 0.0
+_FILTER_WORDS_CACHE_TTL: float = 60.0  # refresh every 60 seconds
+
+
 async def get_filter_words():
+    global _FILTER_WORDS_CACHE, _FILTER_WORDS_CACHE_TIME
+    now = time.monotonic()
+    if _FILTER_WORDS_CACHE_TIME and (now - _FILTER_WORDS_CACHE_TIME) < _FILTER_WORDS_CACHE_TTL:
+        return _FILTER_WORDS_CACHE
     try:
         doc = await filter_words_collection.find_one({"_id": "filter_words"})
-        return set(doc["words"]) if doc else set()
+        _FILTER_WORDS_CACHE = set(doc["words"]) if doc else set()
+        _FILTER_WORDS_CACHE_TIME = now
+        return _FILTER_WORDS_CACHE
     except Exception as e:
         logger.error(f"Error getting filter words: {e}")
-        return set()
+        return _FILTER_WORDS_CACHE  # return stale cache on error
 
 
 async def set_filter_words(words):
@@ -1210,95 +1274,3 @@ async def get_all_results(query: str) -> list:
 
     results = await asyncio.to_thread(_do_search, filter_dict)
     return rank_results(norm, results, pq)
-
-import asyncio
-import logging
-from pyrogram import Client, filters
-from info import DELETE_CHANNELS, LOG_CHANNEL
-from database.ia_filterdb import (
-    is_second_db_configured, collection, second_collection, unpack_new_file_id
-)
-
-logger = logging.getLogger(__name__)
-
-# Match any media type so admin can delete any file from DELETE_CHANNELS
-media_filter = filters.document | filters.video | filters.audio | filters.photo
-
-
-@Client.on_message(filters.chat(DELETE_CHANNELS) & media_filter)
-async def deletemultiplemedia(bot, message):
-    """
-    When admin sends a file to a DELETE_CHANNEL, bot finds that file in the
-    database by its unpacked file_id and deletes it.
-
-    Fixes vs original:
-      - Uses asyncio.to_thread for pymongo (sync) delete — no more TypeError
-        from awaiting a non-coroutine.
-      - Accepts all media types (document, video, audio, photo), not just mp4/mkv.
-      - Sends confirmation reply to admin.
-    """
-    # Determine which media attribute is present
-    media = None
-    for attr in ("video", "document", "audio", "photo", "animation"):
-        media = getattr(message, attr, None)
-        if media:
-            break
-
-    if not media:
-        return
-
-    file_name = getattr(media, "file_name", None) or getattr(media, "file_unique_id", "unknown")
-
-    try:
-        file_id = unpack_new_file_id(media.file_id)
-    except Exception as e:
-        logger.error(f"deleteFiles: could not unpack file_id for {file_name}: {e}")
-        return
-
-    deleted_count = await _delete_file_by_id(file_id)
-
-    if deleted_count:
-        logger.info(f"deleteFiles: deleted '{file_name}' (id={file_id}) from database")
-        try:
-            await message.reply_text(
-                f"✅ <b>File deleted from database!</b>\n"
-                f"📄 <code>{file_name}</code>",
-                quote=True
-            )
-        except Exception:
-            pass
-    else:
-        logger.warning(f"deleteFiles: '{file_name}' (id={file_id}) not found in database")
-        try:
-            await message.reply_text(
-                f"⚠️ <b>File not found in database.</b>\n"
-                f"📄 <code>{file_name}</code>",
-                quote=True
-            )
-        except Exception:
-            pass
-
-
-async def _delete_file_by_id(file_id: str) -> int:
-    """
-    Delete a file from primary (and secondary) DB by _id.
-    Runs pymongo delete_one in a thread pool to avoid blocking the event loop.
-    """
-    def _do_delete():
-        total = 0
-        try:
-            r1 = collection.delete_one({"_id": file_id})
-            total += r1.deleted_count
-        except Exception as e:
-            logger.error(f"deleteFiles primary delete error: {e}")
-
-        if is_second_db_configured():
-            try:
-                r2 = second_collection.delete_one({"_id": file_id})
-                total += r2.deleted_count
-            except Exception as e:
-                logger.error(f"deleteFiles secondary delete error: {e}")
-
-        return total
-
-    return await asyncio.to_thread(_do_delete)
