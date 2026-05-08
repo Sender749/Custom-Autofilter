@@ -92,48 +92,96 @@ def _get_page(search: str, offset: int, max_btn: int) -> tuple:
     return files, next_offset, total
 
 
+# Pre-compiled patterns for _extract_meta (fast, no per-call compilation)
+_META_SEASON_RE  = re.compile(r'\bs(\d{2})\b|\bseason\s*(\d{1,2})\b', re.IGNORECASE)
+_META_YEAR_RE    = re.compile(r'\b(19[5-9]\d|20[0-3]\d)\b')
+_META_LANG_RE    = re.compile(
+    r'\b(hindi|english|tamil|telugu|malayalam|kannada|punjabi|bengali|gujarati|marathi|dual|multi)\b',
+    re.IGNORECASE
+)
+_META_QUALITY_RE = re.compile(
+    r'\b(2160p|4k|uhd|1080p|720p|480p|360p|bluray|bdrip|remux|web[\-\s]?dl|webrip|hdrip|dvdrip|hdts|cam|ts)\b',
+    re.IGNORECASE
+)
+# Quality code → display label mapping (for quality buttons)
+_QUALITY_LABEL = {
+    '2160p': '4K / 2160p', '4k': '4K / 2160p', 'uhd': '4K / 2160p',
+    '1080p': '1080p', '720p': '720p', '480p': '480p', '360p': '360p',
+    'bluray': 'BluRay', 'bdrip': 'BluRay', 'remux': 'BluRay Remux',
+    'web-dl': 'WEB-DL', 'webdl': 'WEB-DL', 'web dl': 'WEB-DL',
+    'webrip': 'WEBRip', 'hdrip': 'HDRip', 'dvdrip': 'DVDRip',
+    'hdts': 'HDTS / CAM', 'cam': 'HDTS / CAM', 'ts': 'HDTS / CAM',
+}
+# Normalise quality token to canonical code for callback_data
+_QUALITY_CODE = {
+    '2160p': '4k', '4k': '4k', 'uhd': '4k',
+    '1080p': '1080p', '720p': '720p', '480p': '480p', '360p': '360p',
+    'bluray': 'bluray', 'bdrip': 'bluray', 'remux': 'bluray',
+    'web-dl': 'webdl', 'webdl': 'webdl', 'web dl': 'webdl',
+    'webrip': 'webrip', 'hdrip': 'hdrip', 'dvdrip': 'dvdrip',
+    'hdts': 'cam', 'cam': 'cam', 'ts': 'cam',
+}
+
+
 def _extract_meta(files: list) -> dict:
     """
     Scan all results once and extract:
-      - available seasons  (sorted descending)
-      - available years    (sorted descending)
-      - available languages
-    All derived from actual filenames in the result set — not hardcoded.
+      - available seasons   (sorted descending)
+      - available years     (sorted descending)
+      - available languages (sorted)
+      - available qualities (ordered by quality tier)
+    All derived from actual file_name + caption in the result set.
     """
     seasons: set = set()
     years: set = set()
     langs: set = set()
-
-    _LANG_LIST = [
-        'hindi', 'english', 'tamil', 'telugu', 'malayalam',
-        'kannada', 'punjabi', 'bengali', 'gujarati', 'marathi',
-        'dual', 'multi',
-    ]
+    quality_codes: set = set()   # canonical codes for callback_data
+    quality_labels: dict = {}    # code -> display label
 
     for f in files:
         text = (f.get("file_name") or "") + " " + (f.get("caption") or "")
-        tl = text.lower()
 
-        # Seasons
-        for m in re.finditer(r'\bs(\d{1,2})\b', tl):
-            n = int(m.group(1))
-            if 1 <= n <= 50:
-                seasons.add(n)
+        # Seasons — match s01/s02 style OR "Season N" (avoids false matches on
+        # random words containing 's' followed by digits)
+        for m in _META_SEASON_RE.finditer(text):
+            n_str = m.group(1) or m.group(2)
+            if n_str:
+                n = int(n_str)
+                if 1 <= n <= 50:
+                    seasons.add(n)
 
         # Years
-        y = _extract_year(text)
-        if y:
-            years.add(y)
+        for ym in _META_YEAR_RE.finditer(text):
+            years.add(int(ym.group(1)))
 
         # Languages
-        for lang in _LANG_LIST:
-            if re.search(r'\b' + lang + r'\b', tl):
-                langs.add(lang)
+        for lm in _META_LANG_RE.finditer(text):
+            langs.add(lm.group(1).lower())
+
+        # Qualities — normalise token to canonical code
+        for qm in _META_QUALITY_RE.finditer(text):
+            token = qm.group(1).lower().replace('-', '').replace(' ', '')
+            # normalise web-dl / webdl / web dl → webdl
+            if 'webdl' in token or token == 'webdl':
+                token = 'webdl'
+            code = _QUALITY_CODE.get(token)
+            if code and code not in quality_codes:
+                quality_codes.add(code)
+                quality_labels[code] = _QUALITY_LABEL.get(token, token.upper())
+
+    # Order qualities by tier (best first)
+    _QUALITY_ORDER = ['4k', '1080p', '720p', '480p', '360p', 'bluray', 'webdl', 'webrip', 'hdrip', 'dvdrip', 'cam']
+    ordered_qualities = [
+        (code, quality_labels.get(code, code.upper()))
+        for code in _QUALITY_ORDER
+        if code in quality_codes
+    ]
 
     return {
         "seasons":   sorted(seasons, reverse=True),
         "years":     sorted(years, reverse=True),
         "languages": sorted(langs),
+        "qualities": ordered_qualities,   # list of (code, label)
     }
 
 
@@ -942,21 +990,6 @@ async def season_search(client: Client, query: CallbackQuery):
     )
 
 
-# Short quality code → regex pattern mapping (keeps callback_data under 64 bytes)
-_QUALITY_CODE_MAP = {
-    "4k":     (r'\b(2160p|4k|uhd)\b',          "4K / 2160p"),
-    "1080p":  (r'\b1080p\b',                    "1080p"),
-    "720p":   (r'\b720p\b',                     "720p"),
-    "480p":   (r'\b480p\b',                     "480p"),
-    "bluray": (r'\b(bluray|bdrip|remux)\b',     "BluRay / BDRip"),
-    "webdl":  (r'\b(web[\-\s]?dl|webdl)\b',  "WEB-DL"),
-    "webrip": (r'\bwebrip\b',                   "WEBRip"),
-    "hdrip":  (r'\bhdrip\b',                    "HDRip"),
-    "dvdrip": (r'\bdvdrip\b',                   "DVDRip"),
-    "cam":    (r'\b(hdts|ts|cam|pdvd)\b',       "HDTS / CAM"),
-}
-
-
 @Client.on_callback_query(filters.regex(r"^qualities#"))
 @Client.on_callback_query(filters.regex(r"^qualities#"))
 async def quality_cb_handler(client: Client, query: CallbackQuery):
@@ -968,27 +1001,22 @@ async def quality_cb_handler(client: Client, query: CallbackQuery):
     if not search:
         return await query.answer(script.OLD_ALRT_TXT.format(query.from_user.first_name), show_alert=True)
 
-    # Get all files from cache — no DB call needed
-    entry = _cache_get(search)
-    all_files = entry["files"] if entry else []
+    # Get qualities from pre-computed meta (from _extract_meta, already in cache)
+    meta = _META_STORE.get(key, {})
+    available = meta.get("qualities", [])   # list of (code, label)
 
-    if not all_files:
-        return await query.answer("⚠️ No quality info found for this search.", show_alert=True)
-
-    # Find which quality codes actually appear in the result set
-    available = []
-    for code, (pattern, label) in _QUALITY_CODE_MAP.items():
-        regex = re.compile(pattern, re.IGNORECASE)
-        if any(
-            regex.search((f.get("file_name") or "") + " " + (f.get("caption") or ""))
-            for f in all_files
-        ):
-            available.append((code, label))
+    if not available:
+        # Fallback: recompute from cache if meta is empty
+        entry = _cache_get(search)
+        if entry:
+            meta2 = _extract_meta(entry["files"])
+            available = meta2.get("qualities", [])
+            _META_STORE[key] = meta2
 
     if not available:
         return await query.answer("⚠️ No quality info found for this search.", show_alert=True)
 
-    # Build buttons using short code — callback_data stays well under 64 bytes
+    # Build buttons using short code — all callback_data well under 64 bytes
     btn = []
     row = []
     for code, label in available:
@@ -1030,20 +1058,22 @@ async def quality_search(client: Client, query: CallbackQuery):
             _cache_set(search, all_files, meta)
             _META_STORE[key] = meta
 
-    # Look up the real regex pattern from the short code
-    quality_entry = _QUALITY_CODE_MAP.get(code)
-    if quality_entry:
-        pattern, _ = quality_entry
-        qul_re = re.compile(pattern, re.IGNORECASE)
-    else:
-        # Fallback: treat code as literal search term
-        qul_re = re.compile(re.escape(code), re.IGNORECASE)
-    qul = code  # keep for nav callbacks
+    # Find pattern from meta qualities or fall back to code-based pattern
+    meta = _META_STORE.get(key, {})
+    # Build filter: match any file whose quality code matches
+    # Use _META_QUALITY_RE to re-extract quality from each file, then compare code
+    def _file_matches_quality(f, target_code):
+        text = (f.get("file_name") or "") + " " + (f.get("caption") or "")
+        for qm in _META_QUALITY_RE.finditer(text):
+            token = qm.group(1).lower().replace("-", "").replace(" ", "")
+            if "webdl" in token or token == "webdl":
+                token = "webdl"
+            if _QUALITY_CODE.get(token) == target_code:
+                return True
+        return False
 
-    filtered_files = [
-        f for f in all_files
-        if qul_re.search((f.get('file_name') or '') + ' ' + (f.get('caption') or ''))
-    ]
+    filtered_files = [f for f in all_files if _file_matches_quality(f, code)]
+    qul = code  # keep for nav callbacks
     if not filtered_files:
         return await query.answer(f"😔 No files found with that quality.", show_alert=True)
 
