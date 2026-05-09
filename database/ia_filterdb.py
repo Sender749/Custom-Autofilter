@@ -1045,6 +1045,14 @@ async def save_file(media):
             collection.insert_one(document)
             return 'suc'
         except DuplicateKeyError:
+            # File already exists — check if caption changed and update if so
+            existing = collection.find_one({'_id': file_id}, {'caption': 1})
+            if existing and existing.get('caption') != file_caption:
+                collection.update_one(
+                    {'_id': file_id},
+                    {'$set': {'caption': file_caption, 'category': category}}
+                )
+                return 'upd'
             return 'dup'
         except OperationFailure:
             if SECOND_FILES_DATABASE_URL:
@@ -1052,11 +1060,19 @@ async def save_file(media):
                     second_collection.insert_one(document)
                     return 'suc'
                 except DuplicateKeyError:
+                    # Same caption-update logic for second DB
+                    existing = second_collection.find_one({'_id': file_id}, {'caption': 1})
+                    if existing and existing.get('caption') != file_caption:
+                        second_collection.update_one(
+                            {'_id': file_id},
+                            {'$set': {'caption': file_caption, 'category': category}}
+                        )
+                        return 'upd'
                     return 'dup'
             return 'err'
 
     result = await asyncio.to_thread(_insert)
-    if result == 'suc':
+    if result in ('suc', 'upd'):
         global _TITLE_CACHE_TIME
         _TITLE_CACHE_TIME = 0.0   # invalidate cache
     logger.info(f'Save [{category}] {file_name}: {result}')
