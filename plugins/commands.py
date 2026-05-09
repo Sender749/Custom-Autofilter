@@ -79,13 +79,25 @@ async def start(client: Client, message):
     # ── miniapp deeplink: ?start=miniapp_FILEID ──────────────────────────────
     # This is the single universal entry-point from the miniapp for ALL opening
     # methods (menu button, /miniapp cmd, configure button, direct link).
-    # The miniapp closes and sends the user here; we call send_file_with_checks
+    # The miniapp minimizes and sends the user here; we call send_file_with_checks
     # which is THE one function that handles force-sub, limit, verify, premium.
     if data and data.startswith('miniapp_'):
         file_id = data[len('miniapp_'):]
         if file_id:
+            # Show random sticker while processing checks in background
+            loading_sticker = None
+            try:
+                loading_sticker = await message.reply_sticker(random.choice(LOADING_STICKERS))
+            except Exception:
+                loading_sticker = None
             from plugins.miniapp_plugin import send_file_with_checks
             await send_file_with_checks(client, message.from_user.id, file_id)
+            # Delete the sticker after all checks are done (pass or fail)
+            if loading_sticker:
+                try:
+                    await loading_sticker.delete()
+                except Exception:
+                    pass
         return
 
     if data and data.startswith('notcopy'):
