@@ -754,13 +754,14 @@ function requestFile(btn) {
   const fileId = btn.getAttribute('data-file-id');
   if (!fileId) return;
   tg.HapticFeedback.impactOccurred('medium');
-  // Close miniapp first so Telegram re-opens bot with the deep link param.
-  // Without tg.close(), Telegram may silently ignore openTelegramLink on repeat taps
-  // because the bot chat is already in the foreground. Closing forces a fresh open.
+  // Minimize the miniapp so user is taken to bot DM while miniapp stays in tray.
+  // tg.minimize() keeps the app alive (no re-open needed) and immediately shows
+  // the bot chat where the file delivery will arrive.
   const url = 'https://t.me/' + BOT_USERNAME + '?start=miniapp_' + encodeURIComponent(fileId);
-  tg.close();
-  // Small delay lets the close animation complete before the link fires
-  setTimeout(() => tg.openTelegramLink(url), 150);
+  // Open the bot deep-link first, then minimize so Telegram navigates to DM
+  tg.openTelegramLink(url);
+  // Small delay so the link fires before minimize kicks in
+  setTimeout(() => tg.minimize(), 300);
 }
 
 function switchSeason(sNum, tabEl) {
