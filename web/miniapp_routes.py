@@ -1029,8 +1029,32 @@ async def miniapp_send_file(request: Request):
         return json_resp({'ok': False, 'error': 'server_error'}, 500)
 
 
+async def miniapp_poster(request):
+    """GET /miniapp/poster?title=...&year=... — returns TMDB/IMDb meta for a title."""
+    if request.method == 'OPTIONS':
+        return cors_preflight()
+    title = request.rel_url.query.get('title', '').strip()
+    year  = request.rel_url.query.get('year', '').strip()
+    if not title:
+        return json_resp({'ok': False, 'error': 'Missing title'}, 400)
+    meta = await _get_meta(title, year)
+    return json_resp({'ok': True, 'meta': meta})
+
+
 routes = [
     web.route('GET',     '/miniapp/health',        miniapp_health),
-    web.route('POST',    '/miniapp/send_file',     miniapp_send_file),
-    web.route('OPTIONS', '/miniapp/send_file',     miniapp_send_file),
+    web.route('GET',     '/miniapp/browse',         miniapp_browse),
+    web.route('OPTIONS', '/miniapp/browse',         miniapp_browse),
+    web.route('GET',     '/miniapp/recent',         miniapp_recent),
+    web.route('OPTIONS', '/miniapp/recent',         miniapp_recent),
+    web.route('GET',     '/miniapp/search',         miniapp_search),
+    web.route('OPTIONS', '/miniapp/search',         miniapp_search),
+    web.route('GET',     '/miniapp/group_details',  miniapp_group_details),
+    web.route('OPTIONS', '/miniapp/group_details',  miniapp_group_details),
+    web.route('GET',     '/miniapp/poster',         miniapp_poster),
+    web.route('OPTIONS', '/miniapp/poster',         miniapp_poster),
+    web.route('POST',    '/miniapp/send_file',      miniapp_send_file),
+    web.route('OPTIONS', '/miniapp/send_file',      miniapp_send_file),
+    web.route('GET',     '/miniapp',                miniapp_html),
+    web.route('GET',     '/miniapp/',               miniapp_html),
 ]
