@@ -430,17 +430,39 @@ def _language_score(text: str, preferred_langs: list) -> int:
     return score
 
 
+def _is_combined_episode(text: str) -> bool:
+    """
+    Detect if a file is a combined/batch episode (e.g. S01E01-E12, S01 Complete,
+    E01-E24, all episodes, batch, complete season, etc.).
+    Combined files should be placed AFTER individual episodes.
+    """
+    t = text.lower()
+    # Episode range: S01E01-E12, E01-E24, 01-12, S01E01E02E03 (multiple E tags)
+    if re.search(r's\d{1,2}e\d{1,3}[\-_to]+e?\d{1,3}', t, re.I):
+        return True
+    if re.search(r'\be\d{1,3}[\-_]e?\d{1,3}\b', t, re.I):
+        return True
+    # Multiple consecutive episode tags: S01E01E02 or S01E01+E02
+    if re.search(r's\d{1,2}(e\d{1,3}){2,}', t, re.I):
+        return True
+    # Season pack / complete keywords
+    if re.search(r'\b(complete|all\s*episodes?|full\s*season|season\s*pack|batch)\b', t, re.I):
+        return True
+    return False
+
+
 def rank_results(query: str, files: list, pq: 'ParsedQuery | None' = None) -> list:
     """
-    Multi-factor smart ranking:
+    Multi-factor smart ranking with improved exact-title prioritization.
 
-    Tier 1 — Exact title match (highest priority, always on top)
-    Tier 2 — Series ordering: highest season first, then ascending episode
-    Tier 3 — Quality/resolution (for movies), or same season ordering (series)
-    Tier 4 — Year (latest first)
-    Tier 5 — Language preference (user-specified languages on top)
-    Tier 6 — Files with a language tag above files without one
-    Tier 7 — Multi-audio bonus
+    Tier 0 — EXACT title-only match (single word or multi-word exact strip match)
+              e.g. query "from" → only files whose stripped title == "from" go here
+    Tier 1 — Strong title match (all query words present, few/no extra title words)
+    Tier 2 — Prefix/contains match
+    Tier 3 — Series ordering: highest season first, ascending episode, combined last
+    Tier 4 — Quality/resolution
+    Tier 5 — Year (latest first)
+    Tier 6 — Language preference
     """
     if pq is None:
         pq = parse_query(query)
@@ -469,88 +491,107 @@ def rank_results(query: str, files: list, pq: 'ParsedQuery | None' = None) -> li
         f_stripped  = _strip_tech(text)
         f_words     = set(f_stripped.split())
 
-        # ── Tier 1: exact title match ────────────────────────────────────────
-        # Compare STRIPPED titles (no tech/quality/lang tags) so:
-        #   query="you" → q_stripped="you"
-        #   file="You (2018) S01E01 Hindi 1080p" → f_stripped="you" → EXACT match
-        #   file="You Are Teenager 2022" → f_stripped="you are teenager" → PREFIX only
-        # This correctly puts "you" above "you are teenager"
+        # ── Tier 0 & 1: exact / strong title match ──────────────────────────
+        # We compare STRIPPED titles (no tech/quality/lang/year tags) so:
+        #   query="from"  → q_stripped="from"
+        #   file="From S01E01 Hindi 1080p"  → f_stripped="from" → EXACT (Tier 0)
+        #   file="From the World of John"   → f_stripped="from the world of john" → prefix (Tier 2)
+        #   file="Where You From"           → f_stripped="where you from" → contains (Tier 2)
         exact = 0
 
-        # Collapsed equality on stripped titles (handles dom's, S.W.A.T, B A S S)
         f_stripped_collapsed = _collapse(f_stripped)
         q_stripped_collapsed = _collapse(q_stripped)
+        f_word_list = [w for w in f_stripped.split() if w]
+        q_word_count = len(q_words)
+        f_word_count = len(f_word_list)
 
-        if f_stripped_collapsed == q_stripped_collapsed:
-            # Stripped titles match exactly — true title match regardless of quality tags
-            exact = 10000
-        elif q_stripped_collapsed and f_stripped_collapsed == q_stripped_collapsed:
-            exact = 10000
+        if q_stripped_collapsed and f_stripped_collapsed == q_stripped_collapsed:
+            # Stripped titles are identical — true exact match regardless of
+            # quality/lang tags in the full filename.  This is the TOP tier.
+            exact = 100_000
+
         elif f_collapsed == q_collapsed:
-            # Full collapsed match (short titles like "you", "us", "it")
-            exact = 9000
-        elif q_words and all(w in f_words for w in q_words) and len(f_words) == len(q_words):
-            # All query words match AND file has same word count → strong title match
-            exact = 8500
+            # Full raw collapsed equality (handles "dom's" == "doms")
+            exact = 90_000
+
         elif q_words and all(w in f_words for w in q_words):
-            # All query words present — file may have extra tech words
-            exact = 7000
-        elif q_collapsed and f_stripped_collapsed.startswith(q_stripped_collapsed):
-            # File stripped title starts with query (word-level prefix)
-            exact = 6000
-        elif q_collapsed in f_stripped_collapsed:
-            # Query found within stripped title
-            exact = 4000
+            # All query words are present in the file's stripped title.
+            # Now distinguish: does the file have extra TITLE words beyond the query?
+            # Extra tech words (480p, Hindi, etc.) have already been stripped,
+            # so extra words here are genuine title words.
+            extra_title_words = f_word_count - q_word_count
+            if extra_title_words == 0:
+                # No extra title words — same title, just possibly more quality tags
+                exact = 85_000
+            elif extra_title_words == 1:
+                # One extra title word (e.g. "the", year-like word)
+                exact = 70_000
+            elif extra_title_words <= 2:
+                exact = 55_000
+            else:
+                # Many extra words — file title is longer, query is a substring
+                exact = 40_000
 
-        # Word overlap as base score (0–3000)
+        elif q_stripped_collapsed and f_stripped_collapsed.startswith(q_stripped_collapsed):
+            # File title starts with query (word-level prefix match)
+            exact = 35_000
+
+        elif q_stripped_collapsed and q_stripped_collapsed in f_stripped_collapsed:
+            # Query found somewhere inside the file title
+            exact = 20_000
+
+        # Word overlap as secondary signal (0–5000)
         overlap = _word_overlap(text)
-        word_score = int(overlap * 3000)
+        word_score = int(overlap * 5000)
 
-        # ── Tier 2: year match ───────────────────────────────────────────────
+        # ── Year match ───────────────────────────────────────────────────────
         f_year = _extract_year(text)
         year_bonus = 0
         if q_year and f_year == q_year:
-            year_bonus = 500       # exact year match
+            year_bonus = 500
         elif f_year:
-            year_bonus = f_year - 1900  # recency (max ~125 for 2025)
+            year_bonus = f_year - 1900   # recency bonus (max ~125 for 2025)
 
-        # ── Tier 3: language priority ────────────────────────────────────────
+        # ── Language priority ────────────────────────────────────────────────
         lang_bonus = _language_score(text, q_langs) if q_langs else 0
         has_lang_tag = _has_language_tag(text)
-        # If user specified a language, unlabelled files go below labelled ones
-        # If user did NOT specify, files with no lang tag are neutral (not penalised)
-        lang_label_bonus = 0
-        if q_langs:
-            lang_label_bonus = 10 if has_lang_tag else 0
-        else:
-            # No language specified by user — no penalty for having/not having lang
-            lang_label_bonus = 0
+        lang_label_bonus = 10 if (q_langs and has_lang_tag) else 0
 
-        # ── Tier 4: quality & resolution ────────────────────────────────────
+        # ── Quality & resolution ─────────────────────────────────────────────
         quality    = _extract_quality(text)
         resolution = _extract_resolution(text)
         multi_audio = 30 if re.search(r'\b(dual|multi)\b', text, re.I) else 0
 
-        # ── Tier 5: series-specific ordering ────────────────────────────────
+        # ── Series-specific ordering ─────────────────────────────────────────
+        # Rule: highest season on top, within a season episodes go ascending (ep01
+        # before ep12), combined/batch files come AFTER individual episode files.
         f_season, f_episode = _extract_season_episode(text)
+        is_combined = _is_combined_episode(text)
         season_score  = 0
         episode_score = 0
+        combined_penalty = -50_000 if is_combined else 0   # combined always after individual
 
-        if is_series:
+        if is_series or f_season > 0:
             if q_season:
                 # User asked for a specific season
                 if f_season == q_season:
-                    season_score = 2000
-                    # Within that season, ascending episode order
-                    episode_score = max(0, 500 - f_episode * 10)
+                    season_score = 10_000
+                    if not is_combined:
+                        # ep01 highest, descending as episode number grows
+                        if f_episode > 0:
+                            episode_score = max(0, 2000 - f_episode * 20)
+                        else:
+                            episode_score = 1000   # no episode tag but correct season
                 else:
-                    # Penalise other seasons proportionally
-                    season_score = max(0, 500 - abs(f_season - q_season) * 100)
-                    episode_score = max(0, 100 - f_episode * 5)
+                    season_score = max(0, 2000 - abs(f_season - q_season) * 400)
             else:
-                # No specific season → latest season first, then ep ascending
-                season_score  = f_season * 200     # higher season = higher score
-                episode_score = max(0, 500 - f_episode * 10)  # ep01 before ep12
+                # No specific season requested → HIGHEST season on top
+                season_score = f_season * 1000   # s05 >> s01
+                if not is_combined:
+                    if f_episode > 0:
+                        episode_score = max(0, 2000 - f_episode * 20)
+                    else:
+                        episode_score = 1000
 
         # ── Assemble final score ─────────────────────────────────────────────
         return (
@@ -563,6 +604,7 @@ def rank_results(query: str, files: list, pq: 'ParsedQuery | None' = None) -> li
             + multi_audio
             + season_score
             + episode_score
+            + combined_penalty
         )
 
     return sorted(files, key=score, reverse=True)
