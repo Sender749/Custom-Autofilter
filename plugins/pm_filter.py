@@ -23,7 +23,7 @@ from database.ia_filterdb import (
     get_search_results, get_all_results, delete_files,
     normalize_query, get_title_cache,
     ai_spell_check, parse_query,
-    _strip_tech, _extract_year, _extract_season_episode,
+    _strip_tech, _extract_year, _extract_season_episode, _is_combined_episode,
 )
 import logging
 import traceback
@@ -93,7 +93,8 @@ def _get_page(search: str, offset: int, max_btn: int) -> tuple:
 
 
 # Pre-compiled patterns for _extract_meta (fast, no per-call compilation)
-_META_SEASON_RE  = re.compile(r'\bs(\d{2})\b|\bseason\s*(\d{1,2})\b', re.IGNORECASE)
+# Fixed: original r'\bs(\d{2})\b' missed S01E01 because \b fails before 'E'
+_META_SEASON_RE  = re.compile(r'\bS(\d{1,2})(?:E\d{1,3})?\b|[Ss]eason\s*(\d{1,2})\b', re.IGNORECASE)
 _META_YEAR_RE    = re.compile(r'\b(19[5-9]\d|20[0-3]\d)\b')
 _META_LANG_RE    = re.compile(
     r'\b(hindi|english|tamil|telugu|malayalam|kannada|punjabi|bengali|gujarati|marathi|dual|multi)\b',
@@ -953,20 +954,30 @@ async def season_search(client: Client, query: CallbackQuery):
 
     try:
         seas_num = int(re.sub(r'[Ss]', '', season))
+        # Match S01E01, S01 standalone, or "Season 1" — all episode formats included
         season_patterns = [
-            re.compile(rf'\bS{seas_num:02d}\b', re.IGNORECASE),
-            re.compile(rf'\bS{seas_num}\b', re.IGNORECASE),
-            re.compile(rf'\bSeason\s*{seas_num}\b', re.IGNORECASE),
+            re.compile(rf'\bS{seas_num:02d}(?:E\d{{1,3}})?\b', re.IGNORECASE),   # S01 or S01E01
+            re.compile(rf'\bS0*{seas_num}(?:E\d{{1,3}})?\b', re.IGNORECASE),      # S1 or S1E1
+            re.compile(rf'\bSeason\s*0*{seas_num}\b', re.IGNORECASE),              # Season 1
         ]
     except (ValueError, IndexError):
         return await query.answer("Invalid season format", show_alert=True)
 
-    filtered_files = [
-        f for f in all_files
-        if any(p.search(f.get('file_name', '') + ' ' + (f.get('caption') or '')) for p in season_patterns)
-    ]
+    def _file_in_season(f, patterns):
+        text = f.get('file_name', '') + ' ' + (f.get('caption') or '')
+        return any(p.search(text) for p in patterns)
+
+    filtered_files = [f for f in all_files if _file_in_season(f, season_patterns)]
     if not filtered_files:
         return await query.answer(f"😔 Season {seas_num} not found for '{search}'", show_alert=True)
+
+    # Sort within the season: episode ascending, combined/batch files last
+    def _ep_sort_key(f):
+        text = f.get('file_name', '') + ' ' + (f.get('caption') or '')
+        _, ep = _extract_season_episode(text)
+        is_combined = _is_combined_episode(text)
+        return (1 if is_combined else 0, ep if ep > 0 else 9999)
+    filtered_files.sort(key=_ep_sort_key)
 
     page_files = filtered_files[current_offset:current_offset + max_btn]
     total_filtered = len(filtered_files)
