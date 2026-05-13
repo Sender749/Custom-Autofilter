@@ -794,10 +794,11 @@ async def next_page(bot, query):
 
         max_btn = int(MAX_BTN)
 
-        # ── Instant page from cache (pure list slice — zero DB) ───────────────
+        # ── Always serve from cache (pure list slice — zero DB) ──────────────
+        # This guarantees results are IDENTICAL every time user navigates back.
         files, n_offset, total = _get_page(search, offset, max_btn)
         if files is None:
-            # Cache miss (expired) — re-fetch
+            # Cache miss (expired) — re-fetch with full ranking
             all_files = await get_all_results(search)
             if not all_files:
                 return await query.answer("No files found", show_alert=True)
@@ -809,6 +810,12 @@ async def next_page(bot, query):
             n_offset = offset + max_btn
             if n_offset >= total:
                 n_offset = ''
+        else:
+            # Cache hit — also refresh META_STORE from full cache so season/lang/quality
+            # tabs always show all available options (not just current page)
+            entry = _cache_get(search)
+            if entry and key not in _META_STORE:
+                _META_STORE[key] = _extract_meta(entry["files"])
 
         n_offset_int = int(n_offset) if n_offset else 0
         if not files:
@@ -876,13 +883,33 @@ async def seasons_cb_handler(client: Client, query: CallbackQuery):
     if int(req) != query.from_user.id:
         return await query.answer(script.ALRT_TXT, show_alert=True)
 
-    # Get seasons from extracted metadata (DB-derived, not hardcoded)
-    meta = _META_STORE.get(key, {})
-    available_seasons = meta.get("seasons", [])
+    search = BUTTONS.get(key)
+    if not search:
+        return await query.answer(script.OLD_ALRT_TXT.format(query.from_user.first_name), show_alert=True)
+
+    # Always recompute meta from the full cached file list to ensure all seasons appear
+    entry = _cache_get(search)
+    if entry:
+        all_files = entry["files"]
+        # Recompute meta from ALL files (not just current page) to get all seasons
+        fresh_meta = _extract_meta(all_files)
+        _META_STORE[key] = fresh_meta
+        available_seasons = fresh_meta.get("seasons", [])
+    else:
+        # Cache miss — re-fetch
+        all_files = await get_all_results(search)
+        if all_files:
+            fresh_meta = _extract_meta(all_files)
+            _cache_set(search, all_files, fresh_meta)
+            _META_STORE[key] = fresh_meta
+            available_seasons = fresh_meta.get("seasons", [])
+        else:
+            available_seasons = []
 
     if not available_seasons:
         return await query.answer("⚠️ No seasons found for this search.", show_alert=True)
 
+    # Seasons already sorted descending (latest first) by _extract_meta
     btn = []
     row = []
     for n in available_seasons:
@@ -991,7 +1018,6 @@ async def season_search(client: Client, query: CallbackQuery):
 
 
 @Client.on_callback_query(filters.regex(r"^qualities#"))
-@Client.on_callback_query(filters.regex(r"^qualities#"))
 async def quality_cb_handler(client: Client, query: CallbackQuery):
     _, key, offset, req = query.data.split("#")
     if int(req) != query.from_user.id:
@@ -1001,17 +1027,22 @@ async def quality_cb_handler(client: Client, query: CallbackQuery):
     if not search:
         return await query.answer(script.OLD_ALRT_TXT.format(query.from_user.first_name), show_alert=True)
 
-    # Get qualities from pre-computed meta (from _extract_meta, already in cache)
-    meta = _META_STORE.get(key, {})
-    available = meta.get("qualities", [])   # list of (code, label)
-
-    if not available:
-        # Fallback: recompute from cache if meta is empty
-        entry = _cache_get(search)
-        if entry:
-            meta2 = _extract_meta(entry["files"])
-            available = meta2.get("qualities", [])
-            _META_STORE[key] = meta2
+    # Always refresh meta from full cached file list for completeness
+    entry = _cache_get(search)
+    if entry:
+        all_files = entry["files"]
+        meta = _extract_meta(all_files)
+        _META_STORE[key] = meta
+        available = meta.get("qualities", [])
+    else:
+        all_files = await get_all_results(search)
+        if all_files:
+            meta = _extract_meta(all_files)
+            _cache_set(search, all_files, meta)
+            _META_STORE[key] = meta
+            available = meta.get("qualities", [])
+        else:
+            available = []
 
     if not available:
         return await query.answer("⚠️ No quality info found for this search.", show_alert=True)
@@ -1133,8 +1164,21 @@ async def languages_cb_handler(client: Client, query: CallbackQuery):
         if int(req) != query.from_user.id:
             return await query.answer(script.ALRT_TXT, show_alert=True)
 
-        # Get languages from extracted metadata (DB-derived)
+        # Always refresh meta from full cached file list so all languages appear
+        search = BUTTONS.get(key)
         meta = _META_STORE.get(key, {})
+        entry = _cache_get(search) if search else None
+        if entry:
+            fresh_meta = _extract_meta(entry["files"])
+            _META_STORE[key] = fresh_meta
+            meta = fresh_meta
+        elif not meta:
+            all_files = await get_all_results(search)
+            if all_files:
+                fresh_meta = _extract_meta(all_files)
+                _cache_set(search, all_files, fresh_meta)
+                _META_STORE[key] = fresh_meta
+                meta = fresh_meta
         available_langs = meta.get("languages", [])
 
         if not available_langs:
