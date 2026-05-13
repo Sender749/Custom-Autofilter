@@ -17,3 +17,9 @@ psutil
 fuzzywuzzy
 python-Levenshtein
 edge-tts
+
+still the problem is same. bot didn't show all seasons from all found files. also bot didn't rank the exact match on top. it's still show other title files in between the exact user query match. 
+
+take your time and build a fast, improved, enhanced and accurate searching engine. as i describes or you know, this bot is used to provide the movies, series, tv shows, anime and other stuff to user by there queries. bot search the relevant data from large database and show results. so build a high quality and improved search engine like: google, netflix, amazon etc..
+
+only provide updated or edited files. if you have any question or doubt then feel free to ask.
