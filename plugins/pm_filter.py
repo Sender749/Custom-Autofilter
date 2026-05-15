@@ -1,7 +1,6 @@
 import asyncio
 import re
 import math
-import time
 import socket
 import aiohttp
 
@@ -42,54 +41,25 @@ CUSTOM_REPLY_WAIT = {}
 REQUEST_DEDUP = {}
 
 # ══════════════════════════════════════════════════════════════════════════════
-# RESULT CACHE — stores the full ranked file list for each query.
-# Pagination is pure Python slicing — zero extra DB calls after first search.
+# ══════════════════════════════════════════════════════════════════════════════
+# NO RESULT CACHE — always fetch fresh from DB so newly added files appear
+# immediately without requiring bot restart or cache expiry.
+# _META_STORE is still used (per-message, not per-query) for season/lang/quality tabs.
 # ══════════════════════════════════════════════════════════════════════════════
 
-_RESULT_CACHE: dict = {}        # key → {"files": [...], "meta": {...}, "time": float}
-_RESULT_CACHE_TTL: int = 600    # 10 minutes
-
-
-def _cache_key(search: str) -> str:
-    return search.lower().strip()
-
-
-def _cache_get(search: str) -> dict | None:
-    key = _cache_key(search)
-    entry = _RESULT_CACHE.get(key)
-    if not entry:
-        return None
-    if time.time() - entry["time"] > _RESULT_CACHE_TTL:
-        _RESULT_CACHE.pop(key, None)
-        return None
-    return entry
+def _cache_get(search: str):
+    """Cache disabled — always returns None to force fresh DB fetch."""
+    return None
 
 
 def _cache_set(search: str, files: list, meta: dict):
-    """Store the full ranked file list and per-query metadata."""
-    key = _cache_key(search)
-    _RESULT_CACHE[key] = {"files": files, "meta": meta, "time": time.time()}
-    # Keep cache size bounded (max 200 unique queries)
-    if len(_RESULT_CACHE) > 200:
-        oldest = min(_RESULT_CACHE, key=lambda k: _RESULT_CACHE[k]["time"])
-        _RESULT_CACHE.pop(oldest, None)
+    """Cache disabled — no-op."""
+    pass
 
 
 def _get_page(search: str, offset: int, max_btn: int) -> tuple:
-    """
-    Get a page of files from cache.
-    Returns (files, next_offset, total) — all from memory, no DB.
-    """
-    entry = _cache_get(search)
-    if not entry:
-        return None, None, None
-    all_files = entry["files"]
-    total = len(all_files)
-    files = all_files[offset:offset + max_btn]
-    next_offset = offset + max_btn
-    if next_offset >= total:
-        next_offset = ''
-    return files, next_offset, total
+    """Cache disabled — always returns None to trigger fresh DB fetch."""
+    return None, None, None
 
 
 # Pre-compiled patterns for _extract_meta (fast, no per-call compilation)
@@ -451,39 +421,24 @@ async def auto_filter(client, msg, spoll=False):
         # ── Fire DB search + settings fetch + status update in parallel ───────
         search_msg = await msg.reply_text(f'<b>🕵️ sᴇᴀʀᴄʜɪɴɢ <code>{search}</code></b>')
 
-        # Check cache first (synchronous, zero-cost)
-        entry = _cache_get(search)
-
-        if entry:
-            all_files = entry["files"]
-            meta      = entry["meta"]
-            # Fire settings + analytics concurrently (non-blocking)
-            settings, _ = await asyncio.gather(
+        # Always fetch fresh from DB — ensures newly added files appear immediately.
+        # Fire DB search + settings + analytics all in parallel for speed.
+        (all_files, settings), _ = await asyncio.gather(
+            asyncio.gather(
+                get_all_results(search),
                 get_settings(chat_id),
-                asyncio.to_thread(silicondb.update_silicon_messages, message.from_user.id, message.text),
-                return_exceptions=True
-            )
-            if isinstance(settings, Exception):
-                settings = {}
+            ),
+            asyncio.to_thread(silicondb.update_silicon_messages, message.from_user.id, message.text),
+            return_exceptions=True
+        )
+        if isinstance(all_files, Exception):
+            all_files = []
+        if isinstance(settings, Exception):
+            settings = {}
+        if all_files:
+            meta = _extract_meta(all_files)
         else:
-            # Cache miss: fetch ALL results + settings concurrently
-            (all_files, settings), _ = await asyncio.gather(
-                asyncio.gather(
-                    get_all_results(search),
-                    get_settings(chat_id),
-                ),
-                asyncio.to_thread(silicondb.update_silicon_messages, message.from_user.id, message.text),
-                return_exceptions=True
-            )
-            if isinstance(all_files, Exception):
-                all_files = []
-            if isinstance(settings, Exception):
-                settings = {}
-            if all_files:
-                meta = _extract_meta(all_files)
-                _cache_set(search, all_files, meta)
-            else:
-                meta = {}
+            meta = {}
 
         await search_msg.delete()
 
@@ -795,28 +750,20 @@ async def next_page(bot, query):
 
         max_btn = int(MAX_BTN)
 
-        # ── Always serve from cache (pure list slice — zero DB) ──────────────
-        # This guarantees results are IDENTICAL every time user navigates back.
-        files, n_offset, total = _get_page(search, offset, max_btn)
-        if files is None:
-            # Cache miss (expired) — re-fetch with full ranking
-            all_files = await get_all_results(search)
-            if not all_files:
-                return await query.answer("No files found", show_alert=True)
-            meta = _extract_meta(all_files)
-            _cache_set(search, all_files, meta)
-            _META_STORE[key] = meta
-            files = all_files[offset:offset + max_btn]
-            total = len(all_files)
-            n_offset = offset + max_btn
-            if n_offset >= total:
-                n_offset = ''
-        else:
-            # Cache hit — also refresh META_STORE from full cache so season/lang/quality
-            # tabs always show all available options (not just current page)
-            entry = _cache_get(search)
-            if entry and key not in _META_STORE:
-                _META_STORE[key] = _extract_meta(entry["files"])
+        # Always fetch fresh from DB for consistent, up-to-date results.
+        # get_all_results returns the full ranked list; we slice the requested page.
+        all_files = await get_all_results(search)
+        if not all_files:
+            return await query.answer("No files found", show_alert=True)
+        meta = _extract_meta(all_files)
+        _META_STORE[key] = meta   # refresh so season/lang/quality tabs are complete
+        total = len(all_files)
+        files = all_files[offset:offset + max_btn]
+        n_offset = offset + max_btn
+        if n_offset >= total:
+            n_offset = ''
+        if not files:
+            return await query.answer("No files found", show_alert=True)
 
         n_offset_int = int(n_offset) if n_offset else 0
         if not files:
@@ -888,24 +835,14 @@ async def seasons_cb_handler(client: Client, query: CallbackQuery):
     if not search:
         return await query.answer(script.OLD_ALRT_TXT.format(query.from_user.first_name), show_alert=True)
 
-    # Always recompute meta from the full cached file list to ensure all seasons appear
-    entry = _cache_get(search)
-    if entry:
-        all_files = entry["files"]
-        # Recompute meta from ALL files (not just current page) to get all seasons
+    # Always fetch fresh so newly added seasons appear immediately
+    all_files = await get_all_results(search)
+    if all_files:
         fresh_meta = _extract_meta(all_files)
         _META_STORE[key] = fresh_meta
         available_seasons = fresh_meta.get("seasons", [])
     else:
-        # Cache miss — re-fetch
-        all_files = await get_all_results(search)
-        if all_files:
-            fresh_meta = _extract_meta(all_files)
-            _cache_set(search, all_files, fresh_meta)
-            _META_STORE[key] = fresh_meta
-            available_seasons = fresh_meta.get("seasons", [])
-        else:
-            available_seasons = []
+        available_seasons = []
 
     if not available_seasons:
         return await query.answer("⚠️ No seasons found for this search.", show_alert=True)
@@ -942,15 +879,11 @@ async def season_search(client: Client, query: CallbackQuery):
     max_btn = int(MAX_BTN)
 
     # All files from cache — zero DB call
-    entry = _cache_get(search)
-    if entry:
-        all_files = entry["files"]
-    else:
-        all_files = await get_all_results(search)
-        if all_files:
-            meta = _extract_meta(all_files)
-            _cache_set(search, all_files, meta)
-            _META_STORE[key] = meta
+    # Always fetch fresh from DB — no cache
+    all_files = await get_all_results(search)
+    if all_files:
+        meta = _extract_meta(all_files)
+        _META_STORE[key] = meta
 
     try:
         seas_num = int(re.sub(r'[Ss]', '', season))
@@ -1038,22 +971,14 @@ async def quality_cb_handler(client: Client, query: CallbackQuery):
     if not search:
         return await query.answer(script.OLD_ALRT_TXT.format(query.from_user.first_name), show_alert=True)
 
-    # Always refresh meta from full cached file list for completeness
-    entry = _cache_get(search)
-    if entry:
-        all_files = entry["files"]
+    # Always fetch fresh so newly added files/qualities appear immediately
+    all_files = await get_all_results(search)
+    if all_files:
         meta = _extract_meta(all_files)
         _META_STORE[key] = meta
         available = meta.get("qualities", [])
     else:
-        all_files = await get_all_results(search)
-        if all_files:
-            meta = _extract_meta(all_files)
-            _cache_set(search, all_files, meta)
-            _META_STORE[key] = meta
-            available = meta.get("qualities", [])
-        else:
-            available = []
+        available = []
 
     if not available:
         return await query.answer("⚠️ No quality info found for this search.", show_alert=True)
@@ -1090,15 +1015,11 @@ async def quality_search(client: Client, query: CallbackQuery):
     current_offset = int(offset)
     max_btn = int(MAX_BTN)
 
-    entry = _cache_get(search)
-    if entry:
-        all_files = entry["files"]
-    else:
-        all_files = await get_all_results(search)
-        if all_files:
-            meta = _extract_meta(all_files)
-            _cache_set(search, all_files, meta)
-            _META_STORE[key] = meta
+    # Always fetch fresh from DB — no cache
+    all_files = await get_all_results(search)
+    if all_files:
+        meta = _extract_meta(all_files)
+        _META_STORE[key] = meta
 
     # Find pattern from meta qualities or fall back to code-based pattern
     meta = _META_STORE.get(key, {})
@@ -1175,21 +1096,14 @@ async def languages_cb_handler(client: Client, query: CallbackQuery):
         if int(req) != query.from_user.id:
             return await query.answer(script.ALRT_TXT, show_alert=True)
 
-        # Always refresh meta from full cached file list so all languages appear
+        # Always fetch fresh so newly added files/languages appear immediately
         search = BUTTONS.get(key)
-        meta = _META_STORE.get(key, {})
-        entry = _cache_get(search) if search else None
-        if entry:
-            fresh_meta = _extract_meta(entry["files"])
-            _META_STORE[key] = fresh_meta
-            meta = fresh_meta
-        elif not meta:
+        meta = {}
+        if search:
             all_files = await get_all_results(search)
             if all_files:
-                fresh_meta = _extract_meta(all_files)
-                _cache_set(search, all_files, fresh_meta)
-                _META_STORE[key] = fresh_meta
-                meta = fresh_meta
+                meta = _extract_meta(all_files)
+                _META_STORE[key] = meta
         available_langs = meta.get("languages", [])
 
         if not available_langs:
@@ -1235,15 +1149,11 @@ async def lang_search(client: Client, query: CallbackQuery):
     current_offset = int(offset)
     max_btn = int(MAX_BTN)
 
-    entry = _cache_get(search)
-    if entry:
-        all_files = entry["files"]
-    else:
-        all_files = await get_all_results(search)
-        if all_files:
-            meta = _extract_meta(all_files)
-            _cache_set(search, all_files, meta)
-            _META_STORE[key] = meta
+    # Always fetch fresh from DB — no cache
+    all_files = await get_all_results(search)
+    if all_files:
+        meta = _extract_meta(all_files)
+        _META_STORE[key] = meta
 
     lang_re = re.compile(r'\b' + re.escape(lang) + r'\b', re.IGNORECASE)
     filtered_files = [
