@@ -372,6 +372,53 @@ def _strip_tech(text: str) -> str:
     return t.strip()
 
 
+# Boilerplate patterns found in Telegram captions but NOT part of the title
+_CAPTION_BOILERPLATE_RE = re.compile(
+    r'@\w+|'                                           # @channel handles
+    r'https?://\S+|'                                   # URLs
+    r'\b(watch\s*(now|online|free)|'                  # "watch now/online/free"
+    r'download\s*(now|free|here)|'                     # "download now/free"
+    r'click\s*(here|to\s*download)|'                  # "click here"
+    r'join\s*(us|now|our?\s*channel)|'                # "join us/channel"
+    r'subscribe\s*(now|us|to)|'                        # "subscribe now"
+    r'follow\s*(us|now)|'                              # "follow us"
+    r'powered\s*by|'                                   # "powered by"
+    r'provided\s*by|'                                  # "provided by"
+    r'source\s*:|'                                     # "source:"
+    r'visit\s*(us|our|website))\b',                   # "visit us/website"
+    re.IGNORECASE
+)
+
+
+def _clean_caption(caption: str) -> str:
+    """
+    Strip boilerplate from a Telegram file caption, keeping only content
+    that is meaningful for title matching.
+    Removes: @handles, URLs, "Watch Now", "Join Us", "Subscribe", etc.
+    Handles multi-line captions where boilerplate is often on separate lines.
+    """
+    if not caption:
+        return ""
+    lines = caption.strip().split('\n')
+    clean_lines = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        # Strip boilerplate tokens from this line
+        stripped = _CAPTION_BOILERPLATE_RE.sub(' ', line)
+        # Remove separator chars (|, -, •, #) left at start/end
+        stripped = re.sub(r'^[\s\|\-_#•·]+|[\s\|\-_#•·]+$', '', stripped).strip()
+        if stripped:
+            clean_lines.append(stripped)
+    result = ' '.join(clean_lines)
+    # Final pass: remove any inline boilerplate that survived
+    result = _CAPTION_BOILERPLATE_RE.sub(' ', result)
+    result = re.sub(r'[\|\-_#•·]+', ' ', result)
+    result = re.sub(r'\s{2,}', ' ', result).strip()
+    return result
+
+
 def _collapse(text: str) -> str:
     """Remove ALL spaces and punctuation — matches 'B A S S' == 'BASS'."""
     return re.sub(r'[^a-z0-9]', '', text.lower())
@@ -567,7 +614,13 @@ def rank_results(query: str, files: list, pq: 'ParsedQuery | None' = None) -> li
         return int(matched / len(q_words) * 3000)
 
     def score(f: dict) -> int:
-        text = (f.get("caption") or f.get("file_name", "")).strip()
+        # Use caption as primary source (it's set by admin and more structured).
+        # Clean boilerplate from caption first (@handles, "Watch Now", URLs etc.)
+        raw_caption  = (f.get("caption") or "").strip()
+        raw_filename = (f.get("file_name") or "").strip()
+        # Clean caption removes noise; fall back to file_name if caption is empty/noise-only
+        clean_cap = _clean_caption(raw_caption) if raw_caption else ""
+        text = clean_cap if clean_cap else raw_filename
         f_stripped = _strip_tech(text)
 
         # ── PRIMARY: title match score ───────────────────────────────────────
@@ -788,15 +841,23 @@ async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
         return [], '', 0
 
     pq = parse_query(norm)
-    patterns = _build_regex_patterns_from_norm(norm, pq)
 
-    # Always search both file_name and caption
+    # Strip tech/quality/lang/year from query before DB search
+    title_for_search = _strip_tech(pq.title_only or norm)
+    if not title_for_search:
+        title_for_search = _strip_tech(norm)
+    if not title_for_search:
+        title_for_search = norm
+
+    patterns = _build_regex_patterns_from_norm(title_for_search, pq)
+
+    # Search caption first (primary), then file_name (fallback)
     or_clauses = []
     for pat in patterns:
-        or_clauses.append({'file_name': pat})
         or_clauses.append({'caption': pat})
+        or_clauses.append({'file_name': pat})
 
-    filter_dict = {'$or': or_clauses} if or_clauses else ({'file_name': patterns[0]} if patterns else {})
+    filter_dict = {'$or': or_clauses} if or_clauses else ({'caption': patterns[0]} if patterns else {})
 
     results = await asyncio.to_thread(_do_search, filter_dict)
 
@@ -1353,16 +1414,27 @@ async def get_all_results(query: str) -> list:
 
     # Parse for ranking metadata (year, season, lang etc.)
     pq = parse_query(norm)
-    # Build search patterns from the full normalised query
-    patterns = _build_regex_patterns_from_norm(norm, pq)
 
-    # Always search both file_name and caption
+    # ── CRITICAL: strip tech/quality/lang/year from query before DB search ──
+    # User may type "from 1080p hindi" or "mirzapur season 3 720p".
+    # Searching DB for "1080p" or "hindi" narrows results incorrectly.
+    # We search only the clean title words; quality/lang/year are ranking signals.
+    title_for_search = _strip_tech(pq.title_only or norm)
+    if not title_for_search:
+        title_for_search = _strip_tech(norm)
+    if not title_for_search:
+        title_for_search = norm   # last resort: use full norm
+
+    patterns = _build_regex_patterns_from_norm(title_for_search, pq)
+
+    # Search caption first (primary), then file_name (fallback).
+    # caption is set by the admin and is the most reliable title source.
     or_clauses = []
     for pat in patterns:
-        or_clauses.append({'file_name': pat})
         or_clauses.append({'caption': pat})
+        or_clauses.append({'file_name': pat})
 
-    filter_dict = {'$or': or_clauses} if or_clauses else ({'file_name': patterns[0]} if patterns else {})
+    filter_dict = {'$or': or_clauses} if or_clauses else ({'caption': patterns[0]} if patterns else {})
 
     results = await asyncio.to_thread(_do_search, filter_dict)
     return rank_results(norm, results, pq)
