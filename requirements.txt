@@ -17,3 +17,9 @@ psutil
 fuzzywuzzy
 python-Levenshtein
 edge-tts
+
+# AI Search Engine dependencies
+rank-bm25
+google-generativeai
+groq
+symspellpy
