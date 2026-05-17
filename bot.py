@@ -10,7 +10,8 @@ from datetime import date, datetime
 import datetime
 import pytz
 from aiohttp import web
-from plugins import check_expired_premium, set_silicon_commands, keep_alive, reset_file_limits_daily 
+from plugins import check_expired_premium, set_silicon_commands, keep_alive, reset_file_limits_daily
+from database.ia_filterdb import collection, second_collection 
 from web import web_app
 import time
 
@@ -43,6 +44,20 @@ class Bot(Client):
         self.loop.create_task(check_expired_premium(self))
         self.loop.create_task(keep_alive())
         self.loop.create_task(reset_file_limits_daily()) 
+        # Start BM25 + SymSpell background build and periodic refresh
+        try:
+            from database.search_engine import bm25_refresh_task, alias_manager
+            from database.ia_filterdb import collection as _col, second_collection as _scol
+            from database.users_chats_db import db as _udb
+            # Set alias collection (uses same DATABASE_URI MongoDB)
+            from pymongo import MongoClient
+            from info import DATABASE_URI, DATABASE_NAME
+            _alias_client = MongoClient(DATABASE_URI)
+            alias_manager.set_collection(_alias_client[DATABASE_NAME]['search_aliases'])
+            self.loop.create_task(bm25_refresh_task(_col, _scol))
+            print('BM25 search engine scheduled')
+        except Exception as _se:
+            print(f'BM25 search engine setup skipped: {_se}')
         print(f"{me.first_name} is started now ❤️")
         tz = pytz.timezone('Asia/Kolkata')
         today = date.today()
