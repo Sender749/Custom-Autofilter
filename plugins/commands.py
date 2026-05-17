@@ -1360,3 +1360,109 @@ async def group_commands(client, message):
             "🚧 ᴘʟᴇᴀsᴇ ᴛʀʏ ᴀɢᴀɪɴ ʟᴀᴛᴇʀ.</b>"
         )
     await message.reply_text(script.GROUP_CMD, disable_web_page_preview=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SEARCH ENGINE ADMIN COMMANDS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@Client.on_message(filters.command('searchstats') & filters.user(ADMINS))
+async def search_stats_cmd(client, message):
+    """Show search engine status — BM25, SymSpell, AI keys, aliases, popularity."""
+    try:
+        from database.search_engine import cmd_search_stats
+        text = await cmd_search_stats()
+    except ImportError:
+        text = "<b>❌ search_engine.py not found.</b>"
+    await message.reply_text(text)
+
+
+@Client.on_message(filters.command('rebuildbm25') & filters.user(ADMINS))
+async def rebuild_bm25_cmd(client, message):
+    """Force rebuild the BM25 in-memory search index from DB."""
+    try:
+        from database.search_engine import cmd_rebuild_bm25
+        from database.ia_filterdb import collection, second_collection
+        sent = await message.reply_text("<b>🔄 Rebuilding BM25 index...</b>")
+        text = await cmd_rebuild_bm25(collection, second_collection)
+        await sent.edit(text)
+    except ImportError:
+        await message.reply_text("<b>❌ search_engine.py not found.</b>")
+    except Exception as e:
+        await message.reply_text(f"<b>❌ Error: {e}</b>")
+
+
+@Client.on_message(filters.command('addalias') & filters.user(ADMINS))
+async def add_alias_cmd(client, message):
+    """
+    Add a search alias.
+    Usage: /addalias money heist | la casa de papel
+    The part before | is the alias, parts after | are alternate search terms.
+    """
+    try:
+        from database.search_engine import cmd_add_alias, alias_manager
+        from info import DATABASE_URI, DATABASE_NAME
+        from pymongo import MongoClient
+        args = message.text.split(None, 1)
+        if len(args) < 2 or '|' not in args[1]:
+            return await message.reply_text(
+                "<b>Usage:</b> <code>/addalias money heist | la casa de papel</code>\n\n"
+                "The part <b>before</b> | is the alias users type.\n"
+                "The part <b>after</b> | is the actual title to search for.\n"
+                "Multiple targets: <code>/addalias spiderman | spider-man | spider man</code>"
+            )
+        parts = args[1].split('|', 1)
+        alias   = parts[0].strip()
+        targets = parts[1].strip()
+        _client = MongoClient(DATABASE_URI)
+        alias_col = _client[DATABASE_NAME]['search_aliases']
+        alias_manager.set_collection(alias_col)
+        text = await cmd_add_alias(alias, targets, alias_col)
+        await message.reply_text(text)
+    except ImportError:
+        await message.reply_text("<b>❌ search_engine.py not found.</b>")
+    except Exception as e:
+        await message.reply_text(f"<b>❌ Error: {e}</b>")
+
+
+@Client.on_message(filters.command('removealias') & filters.user(ADMINS))
+async def remove_alias_cmd(client, message):
+    """
+    Remove a search alias.
+    Usage: /removealias money heist
+    """
+    try:
+        from database.search_engine import cmd_remove_alias, alias_manager
+        from info import DATABASE_URI, DATABASE_NAME
+        from pymongo import MongoClient
+        args = message.text.split(None, 1)
+        if len(args) < 2:
+            return await message.reply_text("<b>Usage:</b> <code>/removealias money heist</code>")
+        alias = args[1].strip()
+        _client = MongoClient(DATABASE_URI)
+        alias_col = _client[DATABASE_NAME]['search_aliases']
+        alias_manager.set_collection(alias_col)
+        text = await cmd_remove_alias(alias, alias_col)
+        await message.reply_text(text)
+    except ImportError:
+        await message.reply_text("<b>❌ search_engine.py not found.</b>")
+    except Exception as e:
+        await message.reply_text(f"<b>❌ Error: {e}</b>")
+
+
+@Client.on_message(filters.command('listalias') & filters.user(ADMINS))
+async def list_alias_cmd(client, message):
+    """List all custom search aliases stored in DB."""
+    try:
+        from database.search_engine import cmd_list_aliases, alias_manager
+        from info import DATABASE_URI, DATABASE_NAME
+        from pymongo import MongoClient
+        _client = MongoClient(DATABASE_URI)
+        alias_col = _client[DATABASE_NAME]['search_aliases']
+        alias_manager.set_collection(alias_col)
+        text = await cmd_list_aliases(alias_col)
+        await message.reply_text(text)
+    except ImportError:
+        await message.reply_text("<b>❌ search_engine.py not found.</b>")
+    except Exception as e:
+        await message.reply_text(f"<b>❌ Error: {e}</b>")
