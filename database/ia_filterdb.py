@@ -24,15 +24,7 @@ collection = db[COLLECTION_NAME]
 second_collection = None
 
 try:
-    # Compound TEXT index on both caption (weight 10) and file_name (weight 5)
-    # This enables fast $text search (10–30ms) as a complement to BM25.
-    # caption gets higher weight because admin-set captions are more reliable.
-    collection.create_index(
-        [("caption", TEXT), ("file_name", TEXT)],
-        weights={"caption": 10, "file_name": 5},
-        name="search_text_index",
-        default_language="none"   # disable English stemming (breaks Indian titles)
-    )
+    collection.create_index([("file_name", TEXT)])
 except OperationFailure as e:
     if 'quota' in str(e).lower():
         if not SECOND_FILES_DATABASE_URL:
@@ -40,28 +32,16 @@ except OperationFailure as e:
         else:
             logger.info('FILES_DATABASE_URL is full, using SECOND_FILES_DATABASE_URL')
     else:
-        try:
-            # Fallback: single field index if compound fails
-            collection.create_index([("file_name", TEXT)])
-        except Exception:
-            pass
+        logger.exception(e)
 
 if SECOND_FILES_DATABASE_URL:
     second_client = MongoClient(SECOND_FILES_DATABASE_URL)
     second_db = second_client[DATABASE_NAME]
     second_collection = second_db[COLLECTION_NAME]
     try:
-        second_collection.create_index(
-            [("caption", TEXT), ("file_name", TEXT)],
-            weights={"caption": 10, "file_name": 5},
-            name="search_text_index",
-            default_language="none"
-        )
+        second_collection.create_index([("file_name", TEXT)])
     except Exception:
-        try:
-            second_collection.create_index([("file_name", TEXT)])
-        except Exception:
-            pass
+        pass
 
 
 def is_second_db_configured() -> bool:
@@ -392,21 +372,31 @@ def _strip_tech(text: str) -> str:
     return t.strip()
 
 
-# Caption boilerplate — found in Telegram captions but NOT part of any title
+# Boilerplate patterns found in Telegram captions but NOT part of the title
 _CAPTION_BOILERPLATE_RE = re.compile(
-    r'@\w+|https?://\S+|' +
-    r'\b(watch\s*(now|online|free)|download\s*(now|free|here)|' +
-    r'click\s*(here|to\s*download)|join\s*(us|now|our?\s*channel)|' +
-    r'subscribe\s*(now|us|to)|follow\s*(us|now)|' +
-    r'powered\s*by|provided\s*by|source\s*:|visit\s*(us|our|website))\b',
+    r'@\w+|'                                           # @channel handles
+    r'https?://\S+|'                                   # URLs
+    r'\b(watch\s*(now|online|free)|'                  # "watch now/online/free"
+    r'download\s*(now|free|here)|'                     # "download now/free"
+    r'click\s*(here|to\s*download)|'                  # "click here"
+    r'join\s*(us|now|our?\s*channel)|'                # "join us/channel"
+    r'subscribe\s*(now|us|to)|'                        # "subscribe now"
+    r'follow\s*(us|now)|'                              # "follow us"
+    r'powered\s*by|'                                   # "powered by"
+    r'provided\s*by|'                                  # "provided by"
+    r'source\s*:|'                                     # "source:"
+    r'visit\s*(us|our|website))\b',                   # "visit us/website"
     re.IGNORECASE
 )
 
 
 def _clean_caption(caption: str) -> str:
-    """Strip boilerplate from a Telegram caption, keeping only title content.
-    Removes @handles, URLs, Watch Now, Join Us, Subscribe etc.
-    Handles multi-line captions where boilerplate is on separate lines."""
+    """
+    Strip boilerplate from a Telegram file caption, keeping only content
+    that is meaningful for title matching.
+    Removes: @handles, URLs, "Watch Now", "Join Us", "Subscribe", etc.
+    Handles multi-line captions where boilerplate is often on separate lines.
+    """
     if not caption:
         return ""
     lines = caption.strip().split('\n')
@@ -415,14 +405,18 @@ def _clean_caption(caption: str) -> str:
         line = line.strip()
         if not line:
             continue
-        s = _CAPTION_BOILERPLATE_RE.sub(' ', line)
-        s = re.sub(r'^[\s|\-_#•·]+|[\s|\-_#•·]+$', '', s).strip()
-        if s:
-            clean_lines.append(s)
+        # Strip boilerplate tokens from this line
+        stripped = _CAPTION_BOILERPLATE_RE.sub(' ', line)
+        # Remove separator chars (|, -, •, #) left at start/end
+        stripped = re.sub(r'^[\s\|\-_#•·]+|[\s\|\-_#•·]+$', '', stripped).strip()
+        if stripped:
+            clean_lines.append(stripped)
     result = ' '.join(clean_lines)
+    # Final pass: remove any inline boilerplate that survived
     result = _CAPTION_BOILERPLATE_RE.sub(' ', result)
-    result = re.sub(r'[|\-_#•·]+', ' ', result)
-    return re.sub(r'\s{2,}', ' ', result).strip()
+    result = re.sub(r'[\|\-_#•·]+', ' ', result)
+    result = re.sub(r'\s{2,}', ' ', result).strip()
+    return result
 
 
 def _collapse(text: str) -> str:
@@ -620,14 +614,14 @@ def rank_results(query: str, files: list, pq: 'ParsedQuery | None' = None) -> li
         return int(matched / len(q_words) * 3000)
 
     def score(f: dict) -> int:
-        # Use cleaned caption as primary text; fall back to file_name
-        raw_cap  = (f.get("caption") or "").strip()
-        raw_fn   = (f.get("file_name") or "").strip()
-        clean_cap = _clean_caption(raw_cap) if raw_cap else ""
-        text = clean_cap if clean_cap else raw_fn
+        # Use caption as primary source (it's set by admin and more structured).
+        # Clean boilerplate from caption first (@handles, "Watch Now", URLs etc.)
+        raw_caption  = (f.get("caption") or "").strip()
+        raw_filename = (f.get("file_name") or "").strip()
+        # Clean caption removes noise; fall back to file_name if caption is empty/noise-only
+        clean_cap = _clean_caption(raw_caption) if raw_caption else ""
+        text = clean_cap if clean_cap else raw_filename
         f_stripped = _strip_tech(text)
-        # Popularity boost from search_engine layer (injected as temp field)
-        pop_boost = f.get("_popularity_boost", 0)
 
         # ── PRIMARY: title match score ───────────────────────────────────────
         title_score = _title_match_score(q_stripped, q_words, f_stripped)
@@ -698,7 +692,6 @@ def rank_results(query: str, files: list, pq: 'ParsedQuery | None' = None) -> li
             + season_score
             + episode_score
             + combined_penalty
-            + pop_boost
         )
 
     return sorted(files, key=score, reverse=True)
@@ -848,15 +841,23 @@ async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
         return [], '', 0
 
     pq = parse_query(norm)
-    patterns = _build_regex_patterns_from_norm(norm, pq)
 
-    # Always search both file_name and caption
+    # Strip tech/quality/lang/year from query before DB search
+    title_for_search = _strip_tech(pq.title_only or norm)
+    if not title_for_search:
+        title_for_search = _strip_tech(norm)
+    if not title_for_search:
+        title_for_search = norm
+
+    patterns = _build_regex_patterns_from_norm(title_for_search, pq)
+
+    # Search caption first (primary), then file_name (fallback)
     or_clauses = []
     for pat in patterns:
-        or_clauses.append({'file_name': pat})
         or_clauses.append({'caption': pat})
+        or_clauses.append({'file_name': pat})
 
-    filter_dict = {'$or': or_clauses} if or_clauses else ({'file_name': patterns[0]} if patterns else {})
+    filter_dict = {'$or': or_clauses} if or_clauses else ({'caption': patterns[0]} if patterns else {})
 
     results = await asyncio.to_thread(_do_search, filter_dict)
 
@@ -1210,17 +1211,7 @@ async def save_file(media):
     result = await asyncio.to_thread(_insert)
     if result in ('suc', 'upd'):
         global _TITLE_CACHE_TIME
-        _TITLE_CACHE_TIME = 0.0   # invalidate title cache
-        # Notify BM25 index of new document so it appears immediately
-        try:
-            from database.search_engine import bm25_index
-            bm25_index.add_document({
-                "_id": document["_id"],
-                "file_name": file_name,
-                "caption": file_caption,
-            })
-        except Exception:
-            pass
+        _TITLE_CACHE_TIME = 0.0   # invalidate cache
     logger.info(f'Save [{category}] {file_name}: {result}')
     return result
 
@@ -1399,64 +1390,51 @@ async def set_filter_words(words):
 # FULL RESULT FETCH — for smart cache (returns all ranked results at once)
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def _get_all_results_mongo(query: str) -> list:
+async def get_all_results(query: str) -> list:
     """
-    Original MongoDB regex search — used as fallback when BM25 is unavailable.
-    Strips tech words from query before searching so quality/lang tags don't
-    narrow results incorrectly. Always searches caption first, then file_name.
+    Fetch and rank ALL results for a query in one shot.
+
+    Search strategy:
+      1. Normalise SE tokens only (season/episode → s02e03 format).
+      2. Strip filter_words from the normalised query.
+      3. Search DB using the FULL remaining query — year, language, etc. included.
+         User intent is preserved: "ironman 2008" searches for "ironman 2008".
+      4. Rank results with multi-factor scoring.
+    Always searches both file_name and caption.
     """
     query = str(query).strip()
     filter_words = await get_filter_words()
+
+    # Normalise SE notation only — keep year, language, all user words
     norm = normalize_query(query)
+    # Strip filter_words (bot-admin defined words to ignore)
     norm = clean_query(norm, filter_words)
     if not norm:
         return []
+
+    # Parse for ranking metadata (year, season, lang etc.)
     pq = parse_query(norm)
 
-    # Strip tech/quality/lang from query before DB search — only search clean title
+    # ── CRITICAL: strip tech/quality/lang/year from query before DB search ──
+    # User may type "from 1080p hindi" or "mirzapur season 3 720p".
+    # Searching DB for "1080p" or "hindi" narrows results incorrectly.
+    # We search only the clean title words; quality/lang/year are ranking signals.
     title_for_search = _strip_tech(pq.title_only or norm)
     if not title_for_search:
         title_for_search = _strip_tech(norm)
     if not title_for_search:
-        title_for_search = norm
+        title_for_search = norm   # last resort: use full norm
 
     patterns = _build_regex_patterns_from_norm(title_for_search, pq)
 
-    # Caption first (admin-set, more reliable), then file_name
+    # Search caption first (primary), then file_name (fallback).
+    # caption is set by the admin and is the most reliable title source.
     or_clauses = []
     for pat in patterns:
         or_clauses.append({'caption': pat})
         or_clauses.append({'file_name': pat})
 
     filter_dict = {'$or': or_clauses} if or_clauses else ({'caption': patterns[0]} if patterns else {})
+
     results = await asyncio.to_thread(_do_search, filter_dict)
     return rank_results(norm, results, pq)
-
-
-async def get_all_results(query: str) -> list:
-    """
-    Primary search entry point — uses enhanced BM25+AI pipeline when available,
-    falls back to MongoDB regex if BM25 index is not built yet.
-
-    On first call after startup, BM25 may not be ready yet — MongoDB regex
-    handles that gracefully. After the background task builds the index
-    (takes ~5–30 seconds depending on DB size), all searches use BM25.
-    """
-    try:
-        from database.search_engine import enhanced_search
-        from database.extra_db import silicondb
-        return await enhanced_search(
-            query=query,
-            collection=collection,
-            second_collection=second_collection,
-            silicondb=silicondb,
-            rank_fn=rank_results,
-            parse_query_fn=parse_query,
-            fallback_search_fn=_get_all_results_mongo,
-        )
-    except ImportError:
-        # search_engine.py not present — fall back to original behaviour
-        return await _get_all_results_mongo(query)
-    except Exception as exc:
-        logger.warning("enhanced_search error, falling back to MongoDB: %s", exc)
-        return await _get_all_results_mongo(query)
