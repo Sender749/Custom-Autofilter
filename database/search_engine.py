@@ -66,10 +66,15 @@ def _try_import_symspell():
 
 def _try_import_genai():
     try:
-        import google.generativeai as genai
-        return genai
+        # Try new SDK first (google-genai), fall back to deprecated google-generativeai
+        try:
+            import google.genai as genai
+            return genai
+        except ImportError:
+            import google.generativeai as genai
+            return genai
     except ImportError:
-        logger.info("google-generativeai not installed. Gemini disabled. Run: pip install google-generativeai")
+        logger.info("Gemini not installed. Run: pip install google-genai")
         return None
 
 def _try_import_groq():
@@ -581,8 +586,19 @@ class QueryUnderstandingEngine:
         if not self._genai or not GEMINI_API_KEY or self._initialized:
             return
         try:
-            self._genai.configure(api_key=GEMINI_API_KEY)
-            self._gemini_model = self._genai.GenerativeModel("gemini-1.5-flash")
+            # Handle both google.genai (new) and google.generativeai (deprecated)
+            genai_module = self._genai.__name__ if hasattr(self._genai, '__name__') else str(self._genai)
+            if 'google.genai' in str(self._genai) or hasattr(self._genai, 'Client'):
+                # New google-genai SDK
+                client = self._genai.Client(api_key=GEMINI_API_KEY)
+                self._gemini_model = client.models
+                self._gemini_client = client
+                self._use_new_sdk = True
+            else:
+                # Deprecated google-generativeai SDK
+                self._genai.configure(api_key=GEMINI_API_KEY)
+                self._gemini_model = self._genai.GenerativeModel("gemini-1.5-flash")
+                self._use_new_sdk = False
             self._initialized = True
             logger.info("Gemini Flash initialized")
         except Exception as e:
@@ -665,15 +681,32 @@ Examples:
 - "breaking bad s5e16" → {{"title": "breaking bad", "season": 5, "episode": 16, "is_series": true}}
 """
         try:
-            response = await asyncio.wait_for(
-                self._gemini_model.generate_content_async(
-                    prompt,
-                    generation_config={"temperature": 0.1, "max_output_tokens": 200}
-                ),
-                timeout=8.0
-            )
+            self._init_gemini()
+            if not self._initialized:
+                return None
+            if getattr(self, '_use_new_sdk', False):
+                # New SDK: google.genai
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self._gemini_client.models.generate_content,
+                        model="gemini-1.5-flash",
+                        contents=prompt,
+                    ),
+                    timeout=8.0
+                )
+                raw_text = response.text.strip()
+            else:
+                # Old SDK: google.generativeai
+                response = await asyncio.wait_for(
+                    self._gemini_model.generate_content_async(
+                        prompt,
+                        generation_config={"temperature": 0.1, "max_output_tokens": 200}
+                    ),
+                    timeout=8.0
+                )
+                raw_text = response.text.strip()
             import json
-            text = response.text.strip()
+            text = raw_text
             # Extract JSON from response
             json_match = re.search(r'\{.*\}', text, re.DOTALL)
             if json_match:
