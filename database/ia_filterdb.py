@@ -1390,51 +1390,70 @@ async def set_filter_words(words):
 # FULL RESULT FETCH — for smart cache (returns all ranked results at once)
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def get_all_results(query: str) -> list:
+async def _get_all_results_mongo(query: str) -> list:
     """
-    Fetch and rank ALL results for a query in one shot.
-
-    Search strategy:
-      1. Normalise SE tokens only (season/episode → s02e03 format).
-      2. Strip filter_words from the normalised query.
-      3. Search DB using the FULL remaining query — year, language, etc. included.
-         User intent is preserved: "ironman 2008" searches for "ironman 2008".
-      4. Rank results with multi-factor scoring.
-    Always searches both file_name and caption.
+    MongoDB regex search — used as fallback when BM25/enhanced_search is unavailable.
+    Strips tech words from query so quality/lang tags don't narrow results incorrectly.
+    Searches caption first (more reliable), then file_name.
     """
     query = str(query).strip()
     filter_words = await get_filter_words()
-
-    # Normalise SE notation only — keep year, language, all user words
     norm = normalize_query(query)
-    # Strip filter_words (bot-admin defined words to ignore)
     norm = clean_query(norm, filter_words)
     if not norm:
         return []
-
-    # Parse for ranking metadata (year, season, lang etc.)
     pq = parse_query(norm)
 
-    # ── CRITICAL: strip tech/quality/lang/year from query before DB search ──
-    # User may type "from 1080p hindi" or "mirzapur season 3 720p".
-    # Searching DB for "1080p" or "hindi" narrows results incorrectly.
-    # We search only the clean title words; quality/lang/year are ranking signals.
+    # Strip tech/quality/lang/year — only search clean title words
     title_for_search = _strip_tech(pq.title_only or norm)
     if not title_for_search:
         title_for_search = _strip_tech(norm)
     if not title_for_search:
-        title_for_search = norm   # last resort: use full norm
+        title_for_search = norm
 
     patterns = _build_regex_patterns_from_norm(title_for_search, pq)
 
-    # Search caption first (primary), then file_name (fallback).
-    # caption is set by the admin and is the most reliable title source.
     or_clauses = []
     for pat in patterns:
         or_clauses.append({'caption': pat})
         or_clauses.append({'file_name': pat})
-
     filter_dict = {'$or': or_clauses} if or_clauses else ({'caption': patterns[0]} if patterns else {})
 
     results = await asyncio.to_thread(_do_search, filter_dict)
     return rank_results(norm, results, pq)
+
+
+async def get_all_results(query: str) -> list:
+    """
+    Primary search entry point.
+
+    Routes through the AI-enhanced pipeline (BM25 + SymSpell + aliases + LLM)
+    when available, falls back to MongoDB regex when not.
+
+    Pipeline (in search_engine.py):
+      1. SymSpell correction (instant, from DB vocabulary)
+      2. Alias expansion (money heist → la casa de papel)
+      3. BM25 in-memory index search (2–8ms, smarter than regex)
+      4. LLM fallback (Groq/Gemini) if BM25 returns < 3 results
+      5. Popularity boost from silicon_messages data
+      6. Final ranking via rank_results()
+    """
+    try:
+        from database.search_engine import enhanced_search
+        from database.extra_db import silicondb
+        return await enhanced_search(
+            query=query,
+            collection=collection,
+            second_collection=second_collection,
+            silicondb=silicondb,
+            rank_fn=rank_results,
+            parse_query_fn=parse_query,
+            fallback_search_fn=_get_all_results_mongo,
+        )
+    except ImportError:
+        # search_engine.py not present — use MongoDB regex directly
+        logger.debug("search_engine not available, using MongoDB fallback")
+        return await _get_all_results_mongo(query)
+    except Exception as exc:
+        logger.warning("enhanced_search error, falling back to MongoDB: %s", exc)
+        return await _get_all_results_mongo(query)
