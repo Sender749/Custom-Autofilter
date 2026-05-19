@@ -1,6 +1,7 @@
 import asyncio
 import re
 import math
+import time
 import socket
 import aiohttp
 
@@ -22,7 +23,7 @@ from database.ia_filterdb import (
     get_search_results, get_all_results, delete_files,
     normalize_query, get_title_cache,
     ai_spell_check, parse_query,
-    _strip_tech, _extract_year, _extract_season_episode, _is_combined_episode,
+    _strip_tech, _extract_year, _extract_season_episode,
 )
 import logging
 import traceback
@@ -41,88 +42,58 @@ CUSTOM_REPLY_WAIT = {}
 REQUEST_DEDUP = {}
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SMART RESULT CACHE
-# ══════════════════════════════════════════════════════════════════════════════
-# Caches full ranked file list per search query.
-# - First search always fetches fresh from DB (BM25/MongoDB).
-# - All button clicks (next, back, season, quality, language) serve from cache
-#   instantly — zero DB calls, zero delay.
-# - Cache entry is tied to DELETE_TIME: when the result message auto-deletes,
-#   the cache entry is also removed to free memory.
-# - Fresh DB fetch always happens on new user query (not cached per query,
-#   but per message-key so same query from different messages gets fresh data).
+# RESULT CACHE — stores the full ranked file list for each query.
+# Pagination is pure Python slicing — zero extra DB calls after first search.
 # ══════════════════════════════════════════════════════════════════════════════
 
-import time as _time
-
-# _RESULT_CACHE: message_key → {"files": [...], "meta": {...}, "search": str, "ts": float}
-_RESULT_CACHE: dict = {}
+_RESULT_CACHE: dict = {}        # key → {"files": [...], "meta": {...}, "time": float}
+_RESULT_CACHE_TTL: int = 600    # 10 minutes
 
 
-def _cache_set_by_key(key: str, files: list, meta: dict, search: str) -> None:
-    """Store full file list + meta by message key. Called once per user query."""
-    _RESULT_CACHE[key] = {
-        "files":  files,
-        "meta":   meta,
-        "search": search,
-        "ts":     _time.monotonic(),
-    }
+def _cache_key(search: str) -> str:
+    return search.lower().strip()
 
 
-def _cache_get_by_key(key: str) -> dict | None:
-    """Retrieve cache entry by message key. Returns None if not found."""
-    return _RESULT_CACHE.get(key)
-
-
-def _cache_delete_by_key(key: str) -> None:
-    """Remove cache entry when result message is deleted."""
-    _RESULT_CACHE.pop(key, None)
-
-
-def _cache_get_files(key: str) -> list | None:
-    """Get cached file list for a key. Returns None on cache miss."""
+def _cache_get(search: str) -> dict | None:
+    key = _cache_key(search)
     entry = _RESULT_CACHE.get(key)
-    return entry["files"] if entry else None
+    if not entry:
+        return None
+    if time.time() - entry["time"] > _RESULT_CACHE_TTL:
+        _RESULT_CACHE.pop(key, None)
+        return None
+    return entry
 
 
-def _cache_get_meta(key: str) -> dict:
-    """Get cached meta for a key. Returns empty dict on miss."""
-    entry = _RESULT_CACHE.get(key)
-    return entry["meta"] if entry else {}
+def _cache_set(search: str, files: list, meta: dict):
+    """Store the full ranked file list and per-query metadata."""
+    key = _cache_key(search)
+    _RESULT_CACHE[key] = {"files": files, "meta": meta, "time": time.time()}
+    # Keep cache size bounded (max 200 unique queries)
+    if len(_RESULT_CACHE) > 200:
+        oldest = min(_RESULT_CACHE, key=lambda k: _RESULT_CACHE[k]["time"])
+        _RESULT_CACHE.pop(oldest, None)
 
 
-def _cache_get_page(key: str, offset: int, max_btn: int) -> tuple:
+def _get_page(search: str, offset: int, max_btn: int) -> tuple:
     """
     Get a page of files from cache.
-    Returns (files, next_offset, total) or (None, None, None) on miss.
-    Pagination is pure Python list slicing — zero DB calls.
+    Returns (files, next_offset, total) — all from memory, no DB.
     """
-    entry = _RESULT_CACHE.get(key)
+    entry = _cache_get(search)
     if not entry:
         return None, None, None
     all_files = entry["files"]
     total = len(all_files)
-    page = all_files[offset:offset + max_btn]
-    n_offset = offset + max_btn
-    if n_offset >= total:
-        n_offset = ""
-    return page, n_offset, total
-
-
-# Legacy stubs (kept for any external calls)
-def _cache_get(search: str):
-    return None
-
-def _cache_set(search: str, files: list, meta: dict):
-    pass
-
-def _get_page(search: str, offset: int, max_btn: int) -> tuple:
-    return None, None, None
+    files = all_files[offset:offset + max_btn]
+    next_offset = offset + max_btn
+    if next_offset >= total:
+        next_offset = ''
+    return files, next_offset, total
 
 
 # Pre-compiled patterns for _extract_meta (fast, no per-call compilation)
-# Fixed: original r'\bs(\d{2})\b' missed S01E01 because \b fails before 'E'
-_META_SEASON_RE  = re.compile(r'\bS(\d{1,2})(?:E\d{1,3})?\b|[Ss]eason\s*(\d{1,2})\b', re.IGNORECASE)
+_META_SEASON_RE  = re.compile(r'\bs(\d{2})\b|\bseason\s*(\d{1,2})\b', re.IGNORECASE)
 _META_YEAR_RE    = re.compile(r'\b(19[5-9]\d|20[0-3]\d)\b')
 _META_LANG_RE    = re.compile(
     r'\b(hindi|english|tamil|telugu|malayalam|kannada|punjabi|bengali|gujarati|marathi|dual|multi)\b',
@@ -217,24 +188,6 @@ def _extract_meta(files: list) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 # Helper utilities
 # ══════════════════════════════════════════════════════════════════════════════
-
-
-
-async def _get_all_files_cached(key: str, search: str) -> list:
-    """
-    Get all files for a search — from cache if available, else fresh DB fetch.
-    Used by season/quality/language handlers for instant response.
-    """
-    cached = _cache_get_files(key)
-    if cached is not None:
-        return cached
-    # Cache miss — fetch fresh and store
-    all_files = await get_all_results(search)
-    if all_files:
-        meta = _extract_meta(all_files)
-        _cache_set_by_key(key, all_files, meta, search)
-        _META_STORE[key] = meta
-    return all_files or []
 
 def get_display_name(file: dict) -> str:
     caption = file.get("caption")
@@ -497,24 +450,39 @@ async def auto_filter(client, msg, spoll=False):
         # ── Fire DB search + settings fetch + status update in parallel ───────
         search_msg = await msg.reply_text(f'<b>🕵️ sᴇᴀʀᴄʜɪɴɢ <code>{search}</code></b>')
 
-        # Always fetch fresh from DB — ensures newly added files appear immediately.
-        # Fire DB search + settings + analytics all in parallel for speed.
-        (all_files, settings), _ = await asyncio.gather(
-            asyncio.gather(
-                get_all_results(search),
+        # Check cache first (synchronous, zero-cost)
+        entry = _cache_get(search)
+
+        if entry:
+            all_files = entry["files"]
+            meta      = entry["meta"]
+            # Fire settings + analytics concurrently (non-blocking)
+            settings, _ = await asyncio.gather(
                 get_settings(chat_id),
-            ),
-            asyncio.to_thread(silicondb.update_silicon_messages, message.from_user.id, message.text),
-            return_exceptions=True
-        )
-        if isinstance(all_files, Exception):
-            all_files = []
-        if isinstance(settings, Exception):
-            settings = {}
-        if all_files:
-            meta = _extract_meta(all_files)
+                asyncio.to_thread(silicondb.update_silicon_messages, message.from_user.id, message.text),
+                return_exceptions=True
+            )
+            if isinstance(settings, Exception):
+                settings = {}
         else:
-            meta = {}
+            # Cache miss: fetch ALL results + settings concurrently
+            (all_files, settings), _ = await asyncio.gather(
+                asyncio.gather(
+                    get_all_results(search),
+                    get_settings(chat_id),
+                ),
+                asyncio.to_thread(silicondb.update_silicon_messages, message.from_user.id, message.text),
+                return_exceptions=True
+            )
+            if isinstance(all_files, Exception):
+                all_files = []
+            if isinstance(settings, Exception):
+                settings = {}
+            if all_files:
+                meta = _extract_meta(all_files)
+                _cache_set(search, all_files, meta)
+            else:
+                meta = {}
 
         await search_msg.delete()
 
@@ -564,11 +532,6 @@ async def auto_filter(client, msg, spoll=False):
     # Store meta for dynamic season/year/lang tabs
     _META_STORE[key] = meta
 
-    # ── Populate smart cache (all_files + meta, keyed by message) ──────────
-    # Button clicks (next/back/season/quality/lang) read from this cache
-    # instantly — zero DB calls. Cache auto-clears when message is deleted.
-    _cache_set_by_key(key, all_files, meta, search)
-
     del_msg = (
         f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ "
         f"<code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>"
@@ -578,7 +541,7 @@ async def auto_filter(client, msg, spoll=False):
     if settings.get("link"):
         links = "".join([
             f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{message.chat.id}_{f['_id']}>"
-            f"[{get_size(f.get('file_size', 0))}] {formate_file_name(get_display_name(f))}</a></b>"
+            f"[{get_size(f['file_size'])}] {formate_file_name(get_display_name(f))}</a></b>"
             for i, f in enumerate(files, 1)
         ])
         btn = []
@@ -586,7 +549,7 @@ async def auto_filter(client, msg, spoll=False):
         links = ""
         btn = [[
             InlineKeyboardButton(
-                f"🔗 {get_size(f.get('file_size', 0))}≽ {formate_file_name(get_display_name(f))}",
+                f"🔗 {get_size(f['file_size'])}≽ {formate_file_name(get_display_name(f))}",
                 url=f"https://telegram.dog/{temp.U_NAME}?start=file_{message.chat.id}_{f['_id']}"
             )
         ] for f in files]
@@ -689,11 +652,6 @@ async def auto_filter(client, msg, spoll=False):
             await response_msg.delete()
         except Exception:
             pass
-        # Clear cache entry when result message is deleted — frees memory
-        _cache_delete_by_key(key)
-        _META_STORE.pop(key, None)
-        BUTTONS.pop(key, None)
-        CAP.pop(key, None)
 
     if imdb_data and imdb_data.get('poster'):
         try:
@@ -836,27 +794,21 @@ async def next_page(bot, query):
 
         max_btn = int(MAX_BTN)
 
-        # Try cache first (instant) — fallback to fresh DB fetch on cache miss
-        files, n_offset, total = _cache_get_page(key, offset, max_btn)
+        # ── Instant page from cache (pure list slice — zero DB) ───────────────
+        files, n_offset, total = _get_page(search, offset, max_btn)
         if files is None:
-            # Cache miss (first navigation or cache cleared) — fetch fresh
+            # Cache miss (expired) — re-fetch
             all_files = await get_all_results(search)
             if not all_files:
                 return await query.answer("No files found", show_alert=True)
             meta = _extract_meta(all_files)
-            _cache_set_by_key(key, all_files, meta, search)
+            _cache_set(search, all_files, meta)
             _META_STORE[key] = meta
-            total = len(all_files)
             files = all_files[offset:offset + max_btn]
+            total = len(all_files)
             n_offset = offset + max_btn
             if n_offset >= total:
-                n_offset = ""
-        else:
-            # Cache hit — ensure meta is available for tabs
-            if key not in _META_STORE:
-                _META_STORE[key] = _cache_get_meta(key)
-        if not files:
-            return await query.answer("No files found", show_alert=True)
+                n_offset = ''
 
         n_offset_int = int(n_offset) if n_offset else 0
         if not files:
@@ -878,14 +830,14 @@ async def next_page(bot, query):
         if settings.get("link"):
             links = "".join([
                 f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>"
-                f"[{get_size(f.get('file_size', 0))}] {get_display_name(f)}</a></b>"
+                f"[{get_size(f['file_size'])}] {get_display_name(f)}</a></b>"
                 for i, f in enumerate(files, offset + 1)
             ])
             btn = []
         else:
             links = ""
             btn = [[InlineKeyboardButton(
-                f"📁 {get_size(f.get('file_size', 0))}≽ {formate_file_name(get_display_name(f))}",
+                f"📁 {get_size(f['file_size'])}≽ {formate_file_name(get_display_name(f))}",
                 url=f"https://telegram.dog/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}"
             )] for f in files]
 
@@ -924,19 +876,13 @@ async def seasons_cb_handler(client: Client, query: CallbackQuery):
     if int(req) != query.from_user.id:
         return await query.answer(script.ALRT_TXT, show_alert=True)
 
-    search = BUTTONS.get(key)
-    if not search:
-        return await query.answer(script.OLD_ALRT_TXT.format(query.from_user.first_name), show_alert=True)
-
-    # Cache-first: instant from memory, fresh DB fetch only on cache miss
-    all_files = await _get_all_files_cached(key, search)
-    fresh_meta = _META_STORE.get(key) or _extract_meta(all_files)
-    available_seasons = fresh_meta.get("seasons", [])
+    # Get seasons from extracted metadata (DB-derived, not hardcoded)
+    meta = _META_STORE.get(key, {})
+    available_seasons = meta.get("seasons", [])
 
     if not available_seasons:
         return await query.answer("⚠️ No seasons found for this search.", show_alert=True)
 
-    # Seasons already sorted descending (latest first) by _extract_meta
     btn = []
     row = []
     for n in available_seasons:
@@ -967,35 +913,33 @@ async def season_search(client: Client, query: CallbackQuery):
     current_offset = int(offset)
     max_btn = int(MAX_BTN)
 
-    # Cache-first: instant from memory, fresh DB fetch only on cache miss
-    all_files = await _get_all_files_cached(key, search)
+    # All files from cache — zero DB call
+    entry = _cache_get(search)
+    if entry:
+        all_files = entry["files"]
+    else:
+        all_files = await get_all_results(search)
+        if all_files:
+            meta = _extract_meta(all_files)
+            _cache_set(search, all_files, meta)
+            _META_STORE[key] = meta
 
     try:
         seas_num = int(re.sub(r'[Ss]', '', season))
-        # Match S01E01, S01 standalone, or "Season 1" — all episode formats included
         season_patterns = [
-            re.compile(rf'\bS{seas_num:02d}(?:E\d{{1,3}})?\b', re.IGNORECASE),   # S01 or S01E01
-            re.compile(rf'\bS0*{seas_num}(?:E\d{{1,3}})?\b', re.IGNORECASE),      # S1 or S1E1
-            re.compile(rf'\bSeason\s*0*{seas_num}\b', re.IGNORECASE),              # Season 1
+            re.compile(rf'\bS{seas_num:02d}\b', re.IGNORECASE),
+            re.compile(rf'\bS{seas_num}\b', re.IGNORECASE),
+            re.compile(rf'\bSeason\s*{seas_num}\b', re.IGNORECASE),
         ]
     except (ValueError, IndexError):
         return await query.answer("Invalid season format", show_alert=True)
 
-    def _file_in_season(f, patterns):
-        text = f.get('file_name', '') + ' ' + (f.get('caption') or '')
-        return any(p.search(text) for p in patterns)
-
-    filtered_files = [f for f in all_files if _file_in_season(f, season_patterns)]
+    filtered_files = [
+        f for f in all_files
+        if any(p.search(f.get('file_name', '') + ' ' + (f.get('caption') or '')) for p in season_patterns)
+    ]
     if not filtered_files:
         return await query.answer(f"😔 Season {seas_num} not found for '{search}'", show_alert=True)
-
-    # Sort within the season: episode ascending, combined/batch files last
-    def _ep_sort_key(f):
-        text = f.get('file_name', '') + ' ' + (f.get('caption') or '')
-        _, ep = _extract_season_episode(text)
-        is_combined = _is_combined_episode(text)
-        return (1 if is_combined else 0, ep if ep > 0 else 9999)
-    filtered_files.sort(key=_ep_sort_key)
 
     page_files = filtered_files[current_offset:current_offset + max_btn]
     total_filtered = len(filtered_files)
@@ -1013,14 +957,14 @@ async def season_search(client: Client, query: CallbackQuery):
     if settings.get("link"):
         links = "".join([
             f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>"
-            f"[{get_size(f.get('file_size', 0))}] {get_display_name(f)}</a></b>"
+            f"[{get_size(f['file_size'])}] {get_display_name(f)}</a></b>"
             for i, f in enumerate(page_files, current_offset + 1)
         ])
         btn = []
     else:
         links = ""
         btn = [[InlineKeyboardButton(
-            f"🔗 {get_size(f.get('file_size', 0))}≽ {formate_file_name(f['file_name'])}",
+            f"🔗 {get_size(f['file_size'])}≽ {formate_file_name(f['file_name'])}",
             callback_data=f"files#{query.from_user.id}#{f['_id']}"
         )] for f in page_files]
 
@@ -1047,6 +991,7 @@ async def season_search(client: Client, query: CallbackQuery):
 
 
 @Client.on_callback_query(filters.regex(r"^qualities#"))
+@Client.on_callback_query(filters.regex(r"^qualities#"))
 async def quality_cb_handler(client: Client, query: CallbackQuery):
     _, key, offset, req = query.data.split("#")
     if int(req) != query.from_user.id:
@@ -1056,10 +1001,17 @@ async def quality_cb_handler(client: Client, query: CallbackQuery):
     if not search:
         return await query.answer(script.OLD_ALRT_TXT.format(query.from_user.first_name), show_alert=True)
 
-    # Cache-first: instant from memory, fresh DB fetch only on cache miss
-    all_files = await _get_all_files_cached(key, search)
-    meta = _META_STORE.get(key) or _extract_meta(all_files)
-    available = meta.get("qualities", [])
+    # Get qualities from pre-computed meta (from _extract_meta, already in cache)
+    meta = _META_STORE.get(key, {})
+    available = meta.get("qualities", [])   # list of (code, label)
+
+    if not available:
+        # Fallback: recompute from cache if meta is empty
+        entry = _cache_get(search)
+        if entry:
+            meta2 = _extract_meta(entry["files"])
+            available = meta2.get("qualities", [])
+            _META_STORE[key] = meta2
 
     if not available:
         return await query.answer("⚠️ No quality info found for this search.", show_alert=True)
@@ -1096,8 +1048,17 @@ async def quality_search(client: Client, query: CallbackQuery):
     current_offset = int(offset)
     max_btn = int(MAX_BTN)
 
-    # Cache-first: instant from memory, fresh DB fetch only on cache miss
-    all_files = await _get_all_files_cached(key, search)
+    entry = _cache_get(search)
+    if entry:
+        all_files = entry["files"]
+    else:
+        all_files = await get_all_results(search)
+        if all_files:
+            meta = _extract_meta(all_files)
+            _cache_set(search, all_files, meta)
+            _META_STORE[key] = meta
+
+    # Find pattern from meta qualities or fall back to code-based pattern
     meta = _META_STORE.get(key, {})
     # Build filter: match any file whose quality code matches
     # Use _META_QUALITY_RE to re-extract quality from each file, then compare code
@@ -1132,14 +1093,14 @@ async def quality_search(client: Client, query: CallbackQuery):
     if settings.get("link"):
         links = "".join([
             f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>"
-            f"[{get_size(f.get('file_size', 0))}] {get_display_name(f)}</a></b>"
+            f"[{get_size(f['file_size'])}] {get_display_name(f)}</a></b>"
             for i, f in enumerate(page_files, current_offset + 1)
         ])
         btn = []
     else:
         links = ""
         btn = [[InlineKeyboardButton(
-            f"🔗 {get_size(f.get('file_size', 0))}≽ {formate_file_name(f['file_name'])}",
+            f"🔗 {get_size(f['file_size'])}≽ {formate_file_name(f['file_name'])}",
             callback_data=f"files#{query.from_user.id}#{f['_id']}"
         )] for f in page_files]
 
@@ -1172,12 +1133,8 @@ async def languages_cb_handler(client: Client, query: CallbackQuery):
         if int(req) != query.from_user.id:
             return await query.answer(script.ALRT_TXT, show_alert=True)
 
-        # Cache-first: instant from memory, fresh DB fetch only on cache miss
-        search = BUTTONS.get(key)
+        # Get languages from extracted metadata (DB-derived)
         meta = _META_STORE.get(key, {})
-        if not meta and search:
-            all_files = await _get_all_files_cached(key, search)
-            meta = _META_STORE.get(key) or _extract_meta(all_files)
         available_langs = meta.get("languages", [])
 
         if not available_langs:
@@ -1223,8 +1180,15 @@ async def lang_search(client: Client, query: CallbackQuery):
     current_offset = int(offset)
     max_btn = int(MAX_BTN)
 
-    # Cache-first: instant from memory, fresh DB fetch only on cache miss
-    all_files = await _get_all_files_cached(key, search)
+    entry = _cache_get(search)
+    if entry:
+        all_files = entry["files"]
+    else:
+        all_files = await get_all_results(search)
+        if all_files:
+            meta = _extract_meta(all_files)
+            _cache_set(search, all_files, meta)
+            _META_STORE[key] = meta
 
     lang_re = re.compile(r'\b' + re.escape(lang) + r'\b', re.IGNORECASE)
     filtered_files = [
@@ -1250,14 +1214,14 @@ async def lang_search(client: Client, query: CallbackQuery):
     if settings.get("link"):
         links = "".join([
             f"<b>\n\n{i}. <a href=https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{f['_id']}>"
-            f"[{get_size(f.get('file_size', 0))}] {get_display_name(f)}</a></b>"
+            f"[{get_size(f['file_size'])}] {get_display_name(f)}</a></b>"
             for i, f in enumerate(page_files, current_offset + 1)
         ])
         btn = []
     else:
         links = ""
         btn = [[InlineKeyboardButton(
-            f"🔗 {get_size(f.get('file_size', 0))}≽ {formate_file_name(f['file_name'])}",
+            f"🔗 {get_size(f['file_size'])}≽ {formate_file_name(f['file_name'])}",
             callback_data=f"files#{query.from_user.id}#{f['_id']}"
         )] for f in page_files]
 
