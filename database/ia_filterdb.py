@@ -351,6 +351,24 @@ def _collapse(text: str) -> str:
     return re.sub(r'[^a-z0-9]', '', text.lower())
 
 
+def is_title_match(query_title: str, file_text: str) -> bool:
+    """
+    Strict title check: every word of `query_title` (after stripping tech/
+    quality/language/season tags) must appear in `file_text`'s stripped
+    words. This is the same bar rank_results already uses internally for
+    its "all query words present" tier — reused here for callers that need
+    to confirm a file genuinely belongs to a title, not just fuzzy-matched
+    it (e.g. aggregating files for a movie-update notification, where a
+    stray match from an unrelated title would leak wrong season/language
+    data into the post).
+    """
+    q_words = set(w for w in _strip_tech(query_title).split() if w)
+    if not q_words:
+        return True
+    f_words = set(_strip_tech(file_text).split())
+    return q_words.issubset(f_words)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # RANKING — smart multi-factor sort
 # ══════════════════════════════════════════════════════════════════════════════
@@ -381,18 +399,27 @@ _LANG_RANK = {
 }
 
 
+# Precompiled once at import time — avoids re-building these pattern objects
+# on every single call (rank_results calls these once per file, per search).
+_YEAR_EXTRACT_RE = re.compile(r'\b(19[5-9]\d|20[0-3]\d)\b')
+_SE_EXTRACT_RE = re.compile(r's(\d{1,2})e(\d{1,3})', re.IGNORECASE)
+_S_EXTRACT_RE = re.compile(r's(\d{1,2})', re.IGNORECASE)
+_E_EXTRACT_RE = re.compile(r'e(\d{1,3})', re.IGNORECASE)
+_MULTI_AUDIO_RE = re.compile(r'\b(dual|multi)\b', re.IGNORECASE)
+
+
 def _extract_year(text: str) -> int:
-    m = re.findall(r'\b(19[5-9]\d|20[0-3]\d)\b', text)
+    m = _YEAR_EXTRACT_RE.findall(text)
     return max(map(int, m)) if m else 0
 
 
 def _extract_season_episode(text: str):
     season = episode = 0
-    se_m = re.search(r's(\d{1,2})e(\d{1,3})', text, re.I)
+    se_m = _SE_EXTRACT_RE.search(text)
     if se_m:
         return int(se_m.group(1)), int(se_m.group(2))
-    s_m = re.search(r's(\d{1,2})', text, re.I)
-    e_m = re.search(r'e(\d{1,3})', text, re.I)
+    s_m = _S_EXTRACT_RE.search(text)
+    e_m = _E_EXTRACT_RE.search(text)
     if s_m:
         season = int(s_m.group(1))
     if e_m:
@@ -448,20 +475,17 @@ def rank_results(query: str, files: list, pq: 'ParsedQuery | None' = None) -> li
     q_collapsed = _collapse(pq.title_only or query)
     q_stripped  = _strip_tech(pq.title_only or query)
     q_words     = [w for w in q_stripped.split() if w]
+    q_words_set = set(q_words)
+    n_q_words   = len(q_words)
+    # Hoisted out of score(): these only depend on the query, not on each
+    # file, so they were previously being recomputed on every single file
+    # for no reason (a full _collapse() call repeated N times).
+    q_stripped_collapsed = _collapse(q_stripped)
     q_year      = pq.year
     q_season    = pq.season
     q_episode   = pq.episode
     q_langs     = pq.languages
     is_series   = pq.is_series
-
-    def _word_overlap(file_text: str) -> float:
-        """Fraction of query words found in file text (0.0–1.0)."""
-        if not q_words:
-            return 1.0
-        f_stripped = _strip_tech(file_text)
-        f_words = set(f_stripped.split())
-        matched = sum(1 for w in q_words if w in f_words)
-        return matched / len(q_words)
 
     def score(f: dict):
         text = (f.get("caption") or f.get("file_name", "")).strip()
@@ -479,20 +503,17 @@ def rank_results(query: str, files: list, pq: 'ParsedQuery | None' = None) -> li
 
         # Collapsed equality on stripped titles (handles dom's, S.W.A.T, B A S S)
         f_stripped_collapsed = _collapse(f_stripped)
-        q_stripped_collapsed = _collapse(q_stripped)
 
         if f_stripped_collapsed == q_stripped_collapsed:
             # Stripped titles match exactly — true title match regardless of quality tags
             exact = 10000
-        elif q_stripped_collapsed and f_stripped_collapsed == q_stripped_collapsed:
-            exact = 10000
         elif f_collapsed == q_collapsed:
             # Full collapsed match (short titles like "you", "us", "it")
             exact = 9000
-        elif q_words and all(w in f_words for w in q_words) and len(f_words) == len(q_words):
+        elif q_words_set and q_words_set.issubset(f_words) and len(f_words) == n_q_words:
             # All query words match AND file has same word count → strong title match
             exact = 8500
-        elif q_words and all(w in f_words for w in q_words):
+        elif q_words_set and q_words_set.issubset(f_words):
             # All query words present — file may have extra tech words
             exact = 7000
         elif q_collapsed and f_stripped_collapsed.startswith(q_stripped_collapsed):
@@ -502,9 +523,14 @@ def rank_results(query: str, files: list, pq: 'ParsedQuery | None' = None) -> li
             # Query found within stripped title
             exact = 4000
 
-        # Word overlap as base score (0–3000)
-        overlap = _word_overlap(text)
-        word_score = int(overlap * 3000)
+        # Word overlap as base score (0–3000). f_words/q_words are already
+        # computed above — reuse them instead of re-stripping the file text
+        # a second time (this used to call _strip_tech() twice per file).
+        if n_q_words:
+            matched = sum(1 for w in q_words if w in f_words)
+            word_score = int((matched / n_q_words) * 3000)
+        else:
+            word_score = 3000
 
         # ── Tier 2: year match ───────────────────────────────────────────────
         f_year = _extract_year(text)
@@ -529,7 +555,7 @@ def rank_results(query: str, files: list, pq: 'ParsedQuery | None' = None) -> li
         # ── Tier 4: quality & resolution ────────────────────────────────────
         quality    = _extract_quality(text)
         resolution = _extract_resolution(text)
-        multi_audio = 30 if re.search(r'\b(dual|multi)\b', text, re.I) else 0
+        multi_audio = 30 if _MULTI_AUDIO_RE.search(text) else 0
 
         # ── Tier 5: series-specific ordering ────────────────────────────────
         f_season, f_episode = _extract_season_episode(text)
@@ -677,14 +703,94 @@ def _build_regex_patterns_from_norm(norm: str, pq: ParsedQuery) -> list:
     return patterns if patterns else [re.compile(re.escape(norm), re.IGNORECASE)]
 
 
-def _do_search(filter_dict) -> list:
-    """Blocking MongoDB search — always run via asyncio.to_thread."""
-    result_map = {}
-    for doc in collection.find(filter_dict):
-        result_map[doc['_id']] = doc
+# Whether the file_name TEXT index can actually be used for $text queries on
+# each collection. None = not probed yet, True/False = known. Cached so a
+# broken/missing index (e.g. quota-limited DB) is only ever detected once,
+# not re-attempted (and re-failed) on every single search.
+_TEXT_SEARCH_OK = {"primary": None, "secondary": None}
+
+
+def _text_prefilter(coll, key: str, search_terms: str, limit: int = 1000):
+    """
+    Fast indexed candidate lookup using the file_name TEXT index that's
+    already created at startup but was previously never used for anything.
+
+    Returns a list of candidate docs, or None if $text can't be used here
+    (no index / quota issue / any other error) — callers fall back to the
+    original full regex scan in that case, so correctness never depends on
+    this working.
+    """
+    if _TEXT_SEARCH_OK.get(key) is False or not search_terms:
+        return None
+    try:
+        docs = list(coll.find({"$text": {"$search": search_terms}}).limit(limit))
+        _TEXT_SEARCH_OK[key] = True
+        return docs
+    except OperationFailure:
+        _TEXT_SEARCH_OK[key] = False
+        return None
+    except Exception:
+        return None
+
+
+def _scan_collection(coll, key: str, filter_dict, patterns=None, search_terms=None, caption_enabled=True):
+    """
+    Search one collection for documents matching `filter_dict`.
+
+    Fast path: pre-filter candidates with the indexed $text search on
+    file_name, then confirm each candidate locally with the *same* regex
+    patterns the slow path uses (so the file_name side of the result is
+    byte-for-byte identical to before, just without a full collection scan).
+    Caption isn't text-indexed, so it's still checked with a direct regex
+    query, but only that one field — roughly half the work of before.
+
+    If the fast path can't be used, or turns up nothing, falls back to the
+    exact original full `$or` scan so behaviour never regresses.
+    """
+    if patterns:
+        candidates = _text_prefilter(coll, key, search_terms)
+        if candidates is not None:
+            docs_by_id = {}
+            for doc in candidates:
+                fname = doc.get('file_name') or ''
+                if any(p.search(fname) for p in patterns):
+                    docs_by_id[doc['_id']] = doc
+            if caption_enabled:
+                try:
+                    for doc in coll.find({'$or': [{'caption': p} for p in patterns]}):
+                        docs_by_id.setdefault(doc['_id'], doc)
+                except Exception:
+                    pass
+            if docs_by_id:
+                return list(docs_by_id.values())
+            # Empty fast-path result is ambiguous (could be a genuine zero-
+            # match, or the text tokenizer just missing an odd query) — fall
+            # through to the guaranteed-correct full scan below.
+
+    return list(coll.find(filter_dict))
+
+
+async def _do_search(filter_dict, patterns=None, search_terms=None, caption_enabled=True) -> list:
+    """
+    Non-blocking MongoDB search across the primary (and, if configured,
+    secondary) database. The two databases are scanned concurrently instead
+    of one after another, so having a second DB configured no longer doubles
+    the wait time.
+    """
     if is_second_db_configured():
-        for doc in second_collection.find(filter_dict):
-            result_map.setdefault(doc['_id'], doc)
+        primary_docs, secondary_docs = await asyncio.gather(
+            asyncio.to_thread(_scan_collection, collection, "primary", filter_dict, patterns, search_terms, caption_enabled),
+            asyncio.to_thread(_scan_collection, second_collection, "secondary", filter_dict, patterns, search_terms, caption_enabled),
+        )
+    else:
+        primary_docs = await asyncio.to_thread(_scan_collection, collection, "primary", filter_dict, patterns, search_terms, caption_enabled)
+        secondary_docs = []
+
+    result_map = {}
+    for doc in primary_docs:
+        result_map[doc['_id']] = doc
+    for doc in secondary_docs:
+        result_map.setdefault(doc['_id'], doc)
     return list(result_map.values())
 
 
@@ -714,15 +820,21 @@ async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
     pq = parse_query(norm)
     patterns = _build_regex_patterns_from_norm(norm, pq)
 
-    # Always search both file_name and caption
-    or_clauses = []
-    for pat in patterns:
-        or_clauses.append({'file_name': pat})
-        or_clauses.append({'caption': pat})
+    # Search file_name always; caption only if the admin has it enabled
+    # (USE_CAPTION_FILTER was previously imported but never actually
+    # applied, so caption was always scanned even when turned off).
+    or_clauses = [{'file_name': pat} for pat in patterns]
+    if USE_CAPTION_FILTER:
+        or_clauses += [{'caption': pat} for pat in patterns]
 
     filter_dict = {'$or': or_clauses} if or_clauses else ({'file_name': patterns[0]} if patterns else {})
 
-    results = await asyncio.to_thread(_do_search, filter_dict)
+    results = await _do_search(
+        filter_dict,
+        patterns=patterns,
+        search_terms=(pq.title_only or norm),
+        caption_enabled=USE_CAPTION_FILTER,
+    )
 
     if lang:
         lang_files = [f for f in results if lang in (f.get('file_name') or '').lower()]
@@ -1280,13 +1392,17 @@ async def get_all_results(query: str) -> list:
     # Build search patterns from the full normalised query
     patterns = _build_regex_patterns_from_norm(norm, pq)
 
-    # Always search both file_name and caption
-    or_clauses = []
-    for pat in patterns:
-        or_clauses.append({'file_name': pat})
-        or_clauses.append({'caption': pat})
+    # Search file_name always; caption only if the admin has it enabled
+    or_clauses = [{'file_name': pat} for pat in patterns]
+    if USE_CAPTION_FILTER:
+        or_clauses += [{'caption': pat} for pat in patterns]
 
     filter_dict = {'$or': or_clauses} if or_clauses else ({'file_name': patterns[0]} if patterns else {})
 
-    results = await asyncio.to_thread(_do_search, filter_dict)
+    results = await _do_search(
+        filter_dict,
+        patterns=patterns,
+        search_terms=(pq.title_only or norm),
+        caption_enabled=USE_CAPTION_FILTER,
+    )
     return rank_results(norm, results, pq)
