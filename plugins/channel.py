@@ -8,7 +8,7 @@ from database.users_chats_db import db
 from pyrogram import Client, filters, enums
 from info import CHANNELS, MOVIE_UPDATE_CHANNEL, LINK_PREVIEW, ABOVE_PREVIEW, LANDSCAPE_POSTER, TMDB_POSTER, FETCH_MOVIE_UPDATE
 from Script import script
-from database.ia_filterdb import save_file
+from database.ia_filterdb import save_file, is_title_match
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from utils import temp
 from pymongo.errors import PyMongoError, DuplicateKeyError
@@ -62,6 +62,44 @@ OTT_PLATFORMS = {
     "aha": "Aha", "hbo": "HBO Max", "paramount": "Paramount+",
     "apple": "Apple TV+", "hoichoi": "Hoichoi", "sunnxt": "Sun NXT", "viki": "Viki"
 }
+
+# Word-boundary versions of the two lookup tables above. The old code did a
+# plain substring check (`key in text`), which false-matched short keys
+# inside unrelated words — e.g. "eng" inside "Avengers", "mal" inside
+# "Animal"/"Formal", "nf" inside "Info"/"Confirm", "hin" inside "Machine".
+# That's what caused wrong languages/platforms to show up in update posts.
+# `\bkey\b` only matches the key as its own separate token.
+_LANG_KEY_RE = {k: re.compile(rf'\b{re.escape(k)}\b', re.IGNORECASE) for k in CAPTION_LANGUAGES}
+_OTT_KEY_RE = {k: re.compile(rf'\b{re.escape(k)}\b', re.IGNORECASE) for k in OTT_PLATFORMS}
+
+# A language word immediately followed by a subtitle indicator — e.g.
+# "Hindi ESubs", "Eng Sub", "Tamil Subtitles" — is naming the SUBTITLE
+# track, not the audio track. Counting it as an audio language is what
+# made update notifications wrongly show a subtitle language as if the
+# movie was dubbed/spoken in it.
+_SUB_INDICATOR_RE = re.compile(r'\A[\s\-_]*(?:e)?sub(?:s|title|titles)?\b', re.IGNORECASE)
+
+
+def _match_languages(text: str) -> set:
+    """
+    Return the set of CAPTION_LANGUAGES keys that appear as a whole word in
+    text AND describe the audio (not a language word that's immediately
+    followed by "sub/esub/subs/subtitle(s)", which names the subtitle
+    track instead).
+    """
+    keys = set()
+    for k, pat in _LANG_KEY_RE.items():
+        for m in pat.finditer(text):
+            if _SUB_INDICATOR_RE.match(text[m.end():m.end() + 14]):
+                continue  # this occurrence is "<lang> subs" — subtitle, not audio
+            keys.add(k)
+            break
+    return keys
+
+
+def _match_ott_keys(text: str) -> set:
+    """Return the set of OTT_PLATFORMS keys that appear as a whole word in text."""
+    return {k for k, pat in _OTT_KEY_RE.items() if pat.search(text)}
 
 STANDARD_GENRES = {
     'Action', 'Adventure', 'Animation', 'Biography', 'Comedy', 'Crime', 'Documentary',
@@ -180,7 +218,7 @@ def get_resolution(text: str) -> str:
 
 def extract_ott_platform(text: str) -> str:
     text = text.lower()
-    platforms = {plat for key, plat in OTT_PLATFORMS.items() if key in text}
+    platforms = {OTT_PLATFORMS[k] for k in _match_ott_keys(text)}
     return " | ".join(platforms) if platforms else "N/A"
 
 def extract_season_episode(filename: str) -> Tuple[Optional[int], Optional[str]]:
@@ -218,7 +256,7 @@ def extract_media_info(filename: str, caption: str):
     quality = get_source_quality(caption_clean) or get_source_quality(filename.lower()) or "N/A"
     resolution = get_resolution(caption_clean) or get_resolution(filename.lower()) or "N/A"
     ott_platform = extract_ott_platform(f"{filename} {caption_clean}")
-    lang_keys = {k for k in CAPTION_LANGUAGES if k in caption_clean or k in filename.lower()}
+    lang_keys = _match_languages(caption_clean) | _match_languages(filename.lower())
     language = ", ".join(sorted({CAPTION_LANGUAGES[k] for k in lang_keys})) if lang_keys else "N/A"
     season, episode = extract_season_episode(filename)
     if season is not None:
@@ -683,6 +721,16 @@ async def _build_manual_update_doc(title: str, year: str, season: int):
     if not files:
         files, _, total = await get_search_results(title, max_results=50, offset=0)
 
+    # Stage-1 search is intentionally fuzzy/word-overlap based — good for
+    # end users browsing, but too loose here: it can also pull in files
+    # from a different, unrelated title that merely shares a word (e.g.
+    # searching "Pushpa" could also match "Pushpa Impossible"). That
+    # unrelated title's own season/episode/language data would otherwise
+    # leak into this notification. Keep only files that genuinely contain
+    # every word of the admin's title.
+    files = [f for f in files if is_title_match(title, f"{f.get('file_name', '')} {f.get('caption', '') or ''}")]
+    total = len(files)
+
     # Derive per-file metadata from the DB results
     all_qualities    = set()
     all_resolutions  = set()
@@ -704,7 +752,7 @@ async def _build_manual_update_doc(title: str, year: str, season: int):
         if res != "N/A":
             all_resolutions.update(x.strip() for x in res.split(",") if x.strip())
 
-        lang_keys = {k for k in CAPTION_LANGUAGES if k in unified}
+        lang_keys = _match_languages(unified)
         for k in lang_keys:
             all_languages.add(CAPTION_LANGUAGES[k])
 
