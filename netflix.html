@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
+<title>Movie Zone</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0b0b0d;--surface:#141416;--card:#1b1b1f;
+  --border:rgba(255,255,255,0.08);--accent:#c89b3c;--accent2:#e8c97a;
+  --text:#f2f2f4;--text2:#c7c7cf;--muted:#7a7a84;
+  --radius:8px;
+}
+html,body{height:100%;background:var(--bg);color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  overscroll-behavior:none;-webkit-tap-highlight-color:transparent}
+body{overflow-x:hidden}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-thumb{background:var(--muted);border-radius:99px}
+img{-webkit-user-drag:none}
+
+/* NAV */
+.nav{position:fixed;top:0;left:0;right:0;z-index:50;display:flex;align-items:center;
+  justify-content:space-between;padding:14px 18px;
+  background:linear-gradient(to bottom,rgba(0,0,0,.85),transparent);
+  transition:background .3s}
+.nav.scrolled{background:rgba(11,11,13,.95);backdrop-filter:blur(10px)}
+.logo{display:flex;align-items:center;gap:7px;font-weight:800;font-size:16px;letter-spacing:.3px}
+.logo .dot{width:9px;height:9px;border-radius:2px;background:linear-gradient(135deg,var(--accent),var(--accent2))}
+.search-wrap{position:relative;width:150px;max-width:46vw;transition:width .2s}
+.search-wrap.active{width:220px;max-width:60vw}
+.search-wrap input{width:100%;padding:8px 12px 8px 30px;background:rgba(255,255,255,.07);
+  border:1px solid var(--border);border-radius:99px;color:var(--text);font-size:13px;outline:none}
+.search-wrap input:focus{border-color:var(--accent)}
+.search-wrap svg{position:absolute;left:10px;top:50%;transform:translateY(-50%);opacity:.5;pointer-events:none}
+
+/* HERO */
+.hero{position:relative;height:56vh;min-height:340px;width:100%;display:flex;align-items:flex-end;
+  background-size:cover;background-position:center top;background-color:#1b1b1f}
+.hero::after{content:'';position:absolute;inset:0;
+  background:linear-gradient(to top,var(--bg) 2%,rgba(11,11,13,.15) 55%,rgba(11,11,13,.55) 100%),
+             linear-gradient(to right,rgba(0,0,0,.55) 0%,transparent 60%)}
+.hero-inner{position:relative;z-index:2;padding:0 18px 26px;max-width:560px}
+.hero-badge{color:var(--accent);font-size:11px;font-weight:700;letter-spacing:.14em;
+  text-transform:uppercase;margin-bottom:8px;display:block}
+.hero-title{font-size:28px;font-weight:800;line-height:1.15;margin-bottom:10px;
+  text-shadow:0 2px 12px rgba(0,0,0,.5)}
+.hero-meta{display:flex;gap:10px;align-items:center;color:var(--text2);font-size:12.5px;margin-bottom:12px;flex-wrap:wrap}
+.hero-meta .rating{color:var(--accent2)}
+.hero-desc{color:var(--text2);font-size:13px;line-height:1.55;margin-bottom:16px;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.hero-btns{display:flex;gap:10px}
+.btn{display:flex;align-items:center;gap:7px;border:none;border-radius:6px;font-weight:700;
+  font-size:13.5px;padding:10px 18px;cursor:pointer;transition:transform .15s,opacity .15s}
+.btn:active{transform:scale(.96)}
+.btn-primary{background:var(--accent);color:#151005}
+.btn-primary:hover{background:var(--accent2)}
+.btn-ghost{background:rgba(255,255,255,.12);color:var(--text)}
+.btn-ghost:hover{background:rgba(255,255,255,.2)}
+
+/* SEARCH RESULTS */
+#searchView{display:none;padding:78px 18px 40px}
+#searchView.active{display:block}
+.search-hd{color:var(--muted);font-size:13px;margin-bottom:14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:10px}
+
+/* ROWS */
+#rowsView{padding-top:8px;padding-bottom:40px}
+.row{margin-bottom:26px}
+.row-title{font-size:15px;font-weight:700;padding:0 18px;margin-bottom:10px;color:var(--text)}
+.row-track{display:flex;gap:10px;overflow-x:auto;padding:4px 18px 8px;scrollbar-width:none}
+.row-track::-webkit-scrollbar{display:none}
+
+/* CARD */
+.card{position:relative;flex:0 0 118px;aspect-ratio:2/3;border-radius:var(--radius);overflow:hidden;
+  background:var(--card);cursor:pointer;transition:transform .25s ease;border:1px solid var(--border)}
+.card:hover,.card:active{transform:scale(1.06);z-index:3;border-color:rgba(200,155,60,.5)}
+.card img{width:100%;height:100%;object-fit:cover;display:block}
+.card-fallback{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:6px;padding:8px;text-align:center;background:linear-gradient(160deg,#232326,#111113)}
+.card-fallback span{font-size:26px}
+.card-fallback small{font-size:11px;color:var(--text2);line-height:1.3}
+.card-label{position:absolute;left:0;right:0;bottom:0;padding:16px 8px 7px;font-size:11.5px;font-weight:600;
+  background:linear-gradient(to top,rgba(0,0,0,.85),transparent);color:#fff;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card-rating{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);
+  border-radius:5px;padding:2px 5px;font-size:10.5px;color:var(--accent2);font-weight:700}
+.card-badge{position:absolute;top:6px;left:6px;background:rgba(0,0,0,.55);border-radius:5px;
+  padding:2px 5px;font-size:10px;color:var(--text2)}
+
+/* SKELETON */
+.skel{background:linear-gradient(100deg,#1b1b1f 30%,#242428 50%,#1b1b1f 70%);
+  background-size:200% 100%;animation:shine 1.3s infinite}
+@keyframes shine{to{background-position:-200% 0}}
+
+/* MODAL */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.8);backdrop-filter:blur(3px);
+  z-index:100;display:none;align-items:flex-end;justify-content:center}
+.modal-overlay.active{display:flex}
+@media(min-width:640px){.modal-overlay{align-items:center}}
+.modal{width:100%;max-width:520px;max-height:88vh;overflow-y:auto;background:var(--surface);
+  border-radius:16px 16px 0 0;position:relative}
+@media(min-width:640px){.modal{border-radius:14px}}
+.modal-backdrop{height:190px;background-size:cover;background-position:center;position:relative}
+.modal-backdrop::after{content:'';position:absolute;inset:0;background:linear-gradient(to top,var(--surface),transparent 60%)}
+.modal-close{position:absolute;top:12px;right:12px;width:32px;height:32px;border-radius:50%;
+  background:rgba(0,0,0,.55);border:none;color:#fff;font-size:16px;cursor:pointer;z-index:2}
+.modal-body{padding:0 18px 22px;margin-top:-30px;position:relative}
+.modal-title{font-size:20px;font-weight:800;margin-bottom:6px}
+.modal-meta{display:flex;gap:10px;align-items:center;color:var(--text2);font-size:12.5px;margin-bottom:12px;flex-wrap:wrap}
+.modal-desc{color:var(--text2);font-size:13px;line-height:1.6;margin-bottom:16px}
+.chip-row{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+.chip{font-size:11px;padding:4px 9px;border-radius:99px;background:rgba(255,255,255,.08);color:var(--text2)}
+.file-list{display:flex;flex-direction:column;gap:8px;margin-top:6px}
+.file-item{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;
+  text-decoration:none;color:var(--text)}
+.file-item:hover{border-color:var(--accent)}
+.file-main{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-sub{font-size:11px;color:var(--muted);margin-top:2px}
+.file-go{flex-shrink:0;width:30px;height:30px;border-radius:50%;background:var(--accent);
+  display:flex;align-items:center;justify-content:center;color:#151005}
+.season-tabs{display:flex;gap:6px;overflow-x:auto;margin-bottom:12px;scrollbar-width:none}
+.season-tab{flex-shrink:0;padding:6px 12px;border-radius:99px;font-size:12px;font-weight:600;
+  background:rgba(255,255,255,.06);color:var(--text2);cursor:pointer;white-space:nowrap}
+.season-tab.active{background:var(--accent);color:#151005}
+.section-label{font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.06em;margin:16px 0 8px}
+.empty-state{text-align:center;padding:60px 20px;color:var(--muted);font-size:13px}
+.loader{display:flex;justify-content:center;padding:30px}
+.spinner{width:26px;height:26px;border-radius:50%;border:3px solid rgba(255,255,255,.15);
+  border-top-color:var(--accent);animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);
+  background:#1b1b1f;border:1px solid var(--border);padding:10px 18px;border-radius:99px;
+  font-size:12.5px;opacity:0;pointer-events:none;transition:all .25s;z-index:200}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+
+<nav class="nav" id="nav">
+  <div class="logo"><span class="dot"></span>MOVIE ZONE</div>
+  <div class="search-wrap" id="searchWrap">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+      <circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>
+    </svg>
+    <input id="searchInput" type="text" placeholder="Search titles..." autocomplete="off"/>
+  </div>
+</nav>
+
+<div id="heroWrap"></div>
+
+<div id="rowsView"></div>
+
+<div id="searchView">
+  <div class="search-hd" id="searchHd"></div>
+  <div class="grid" id="searchGrid"></div>
+</div>
+
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal" id="modal"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── CONFIG ──────────────────────────────────────────────────────────────────
+// Same origin as this page — this file is served by the bot's own web app,
+// so it reuses the existing /miniapp/* JSON API (browse, recent, search,
+// poster, group_details) exactly as miniapp.html does. Nothing on the
+// backend was changed to support this page.
+const API_BASE     = '';
+const BOT_USERNAME = 'Navex_MoviesHub_Bot';
+
+const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+if (tg) { try { tg.ready(); tg.expand(); } catch(e) {} }
+
+// ── UTILS ───────────────────────────────────────────────────────────────────
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function $id(id){return document.getElementById(id);}
+function showToast(msg,dur=2200){
+  const el=$id('toast');el.textContent=msg;el.classList.add('show');
+  setTimeout(()=>el.classList.remove('show'),dur);
+}
+async function api(path){
+  const r = await fetch(API_BASE + path, {
+    headers: {'X-Telegram-Init-Data': (tg&&tg.initData)||''},
+  });
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  return r.json();
+}
+// Deep-link into the bot for delivery — reuses the existing
+// ?start=miniapp_<file_id> handler in plugins/commands.py, which already
+// runs force-sub / limit / verify / premium checks. No backend changes.
+function telegramFileLink(fileId){
+  return `https://t.me/${BOT_USERNAME}?start=miniapp_${encodeURIComponent(fileId)}`;
+}
+function openTelegramLink(url){
+  if (tg && tg.openTelegramLink) { tg.openTelegramLink(url); }
+  else { window.open(url, '_blank'); }
+}
+
+// ── CARD ────────────────────────────────────────────────────────────────────
+function cardHTML(item){
+  const emoji = item.type==='series' ? '📺' : item.type==='anime' ? '🎴' : '🎬';
+  const poster = item.poster
+    ? `<img src="${esc(item.poster)}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+    : '';
+  const rating = item.rating ? `<div class="card-rating">★ ${item.rating}</div>` : '';
+  const badge  = item.file_count>1 ? `<div class="card-badge">${item.file_count}</div>` : '';
+  return `<div class="card" data-id="${esc(item.id)}" onclick="openDetail('${esc(item.id)}')">
+    ${poster}
+    <div class="card-fallback" style="${item.poster?'display:none':''}">
+      <span>${emoji}</span><small>${esc(item.name||item.group_title)}</small>
+    </div>
+    ${rating}${badge}
+    <div class="card-label">${esc(item.name||item.group_title)}</div>
+  </div>`;
+}
+function skeletonRow(n){
+  return Array.from({length:n}).map(()=>`<div class="card skel" style="cursor:default"></div>`).join('');
+}
+
+// ── LAZY POSTER FILL (for /recent items which come poster:null) ─────────────
+async function fillPoster(item, cardEl){
+  if(item.poster) return;
+  try{
+    const q = `?title=${encodeURIComponent(item.name||item.group_title)}&year=${encodeURIComponent(item.year||'')}`;
+    const res = await api('/miniapp/poster'+q);
+    const meta = res && res.meta;
+    if(!meta || !cardEl.isConnected) return;
+    if(meta.poster){
+      const img = document.createElement('img');
+      img.loading = 'lazy'; img.src = meta.poster;
+      img.onerror = ()=>{ img.style.display='none'; };
+      cardEl.prepend(img);
+      const fb = cardEl.querySelector('.card-fallback');
+      if(fb) fb.style.display='none';
+    }
+    if(meta.rating){
+      const r = document.createElement('div');
+      r.className='card-rating'; r.textContent = '★ '+meta.rating;
+      cardEl.appendChild(r);
+    }
+  }catch(e){/* silent — card still shows title fallback */}
+}
+
+// ── HERO ────────────────────────────────────────────────────────────────────
+async function loadHero(){
+  try{
+    const res = await api('/miniapp/browse?type=movies&page=0&limit=6');
+    const results = (res && res.results) || [];
+    const withArt = results.find(r=>r.backdrop || r.poster) || results[0];
+    if(!withArt){ $id('heroWrap').innerHTML=''; return; }
+    const bg = withArt.backdrop || withArt.poster || '';
+    $id('heroWrap').innerHTML = `
+      <div class="hero" style="background-image:url('${esc(bg)}')">
+        <div class="hero-inner">
+          <span class="hero-badge">${esc(withArt.type||'movie')}</span>
+          <div class="hero-title">${esc(withArt.name||withArt.group_title)}</div>
+          <div class="hero-meta">
+            ${withArt.year?`<span>${esc(withArt.year)}</span>`:''}
+            ${withArt.rating?`<span class="rating">★ ${esc(withArt.rating)}</span>`:''}
+            ${(withArt.genres||[]).slice(0,3).map(g=>`<span>${esc(g)}</span>`).join('')}
+          </div>
+          <div class="hero-btns">
+            <button class="btn btn-primary" onclick="openDetail('${esc(withArt.id)}')">▶ View</button>
+            <button class="btn btn-ghost" onclick="openDetail('${esc(withArt.id)}')">ⓘ Details</button>
+          </div>
+        </div>
+      </div>`;
+  }catch(e){ $id('heroWrap').innerHTML=''; }
+}
+
+// ── ROWS ────────────────────────────────────────────────────────────────────
+const ROWS = [
+  {key:'recent', title:'Recently Added', endpoint:'/miniapp/recent?page=0&limit=16', lazyPoster:true},
+  {key:'movies', title:'Movies',         endpoint:'/miniapp/browse?type=movies&page=0&limit=16'},
+  {key:'series', title:'Series',         endpoint:'/miniapp/browse?type=series&page=0&limit=16'},
+  {key:'anime',  title:'Anime',          endpoint:'/miniapp/browse?type=anime&page=0&limit=16'},
+];
+
+async function loadRows(){
+  const wrap = $id('rowsView');
+  wrap.innerHTML = ROWS.map(r => `
+    <div class="row" id="row-${r.key}">
+      <div class="row-title">${esc(r.title)}</div>
+      <div class="row-track" id="track-${r.key}">${skeletonRow(6)}</div>
+    </div>`).join('');
+
+  for(const r of ROWS){
+    try{
+      const res = await api(r.endpoint);
+      const results = (res && res.results) || [];
+      const track = $id('track-'+r.key);
+      if(!results.length){
+        document.getElementById('row-'+r.key).style.display='none';
+        continue;
+      }
+      track.innerHTML = results.map(cardHTML).join('');
+      if(r.lazyPoster){
+        results.forEach((item,i)=>{
+          const el = track.children[i];
+          if(el) fillPoster(item, el);
+        });
+      }
+    }catch(e){
+      document.getElementById('row-'+r.key).style.display='none';
+    }
+  }
+}
+
+// ── SEARCH ──────────────────────────────────────────────────────────────────
+let searchTimer=null;
+$id('searchInput').addEventListener('focus', ()=> $id('searchWrap').classList.add('active'));
+$id('searchInput').addEventListener('input', (e)=>{
+  clearTimeout(searchTimer);
+  const q = e.target.value.trim();
+  if(!q){ closeSearch(); return; }
+  searchTimer = setTimeout(()=>runSearch(q), 380);
+});
+$id('searchInput').addEventListener('blur', ()=>{
+  if(!$id('searchInput').value.trim()) $id('searchWrap').classList.remove('active');
+});
+
+function closeSearch(){
+  $id('searchView').classList.remove('active');
+  $id('heroWrap').style.display='';
+  $id('rowsView').style.display='';
+}
+
+async function runSearch(q){
+  $id('heroWrap').style.display='none';
+  $id('rowsView').style.display='none';
+  $id('searchView').classList.add('active');
+  $id('searchHd').textContent = 'Searching…';
+  $id('searchGrid').innerHTML = skeletonRow(8);
+  try{
+    const res = await api('/miniapp/search?q='+encodeURIComponent(q));
+    const results = (res && res.results) || [];
+    $id('searchHd').textContent = results.length
+      ? `${results.length} result${results.length!==1?'s':''} for "${q}"`
+      : `No results for "${q}"`;
+    $id('searchGrid').innerHTML = results.map(cardHTML).join('') ||
+      `<div class="empty-state" style="grid-column:1/-1">Nothing matches — try a different name.</div>`;
+  }catch(e){
+    $id('searchHd').textContent = 'Search failed';
+    $id('searchGrid').innerHTML = `<div class="empty-state" style="grid-column:1/-1">Something went wrong. Try again.</div>`;
+  }
+}
+
+// ── DETAIL MODAL ────────────────────────────────────────────────────────────
+async function openDetail(id){
+  $id('modal').innerHTML = `<div class="loader"><div class="spinner"></div></div>`;
+  $id('modalOverlay').classList.add('active');
+  try{
+    const d = await api('/miniapp/group_details?id='+encodeURIComponent(id));
+    if(!d || !d.ok){ throw new Error('not found'); }
+    renderDetail(d);
+  }catch(e){
+    $id('modal').innerHTML = `<button class="modal-close" onclick="closeDetail()">✕</button>
+      <div class="empty-state">Couldn't load details. Try again.</div>`;
+  }
+}
+function closeDetail(){ $id('modalOverlay').classList.remove('active'); }
+$id('modalOverlay').addEventListener('click', (e)=>{ if(e.target.id==='modalOverlay') closeDetail(); });
+
+function fileItemHTML(f){
+  const bits = [f.print_type, f.quality, (f.languages||[]).join('/'), f.size].filter(Boolean).join(' · ');
+  const link = telegramFileLink(f.id);
+  return `<a class="file-item" href="${esc(link)}" target="_blank" rel="noopener"
+      onclick="event.preventDefault();openTelegramLink('${esc(link)}')">
+    <div style="min-width:0">
+      <div class="file-main">${esc(f.caption||'File')}</div>
+      <div class="file-sub">${esc(bits)}</div>
+    </div>
+    <div class="file-go">↗</div>
+  </a>`;
+}
+
+function renderDetail(d){
+  const meta = d.meta || {};
+  const title = meta.title || d.caption_title || 'Untitled';
+  const backdrop = meta.backdrop || meta.poster || '';
+  const genres = meta.genres || [];
+  const plot = meta.plot || '';
+
+  let bodyHTML = '';
+  if(d.content_type === 'series' && d.seasons){
+    const seasonNums = Object.keys(d.seasons);
+    bodyHTML += `<div class="season-tabs" id="seasonTabs">
+      ${seasonNums.map((sn,i)=>`<div class="season-tab ${i===0?'active':''}" data-season="${esc(sn)}"
+        onclick="switchSeason('${esc(sn)}')">Season ${esc(sn)}</div>`).join('')}
+    </div>
+    ${seasonNums.map((sn,i)=>{
+      const eps = d.seasons[sn];
+      const epList = Object.values(eps).map(ep => `
+        <div class="section-label">${esc(ep.label)}</div>
+        <div class="file-list">${ep.files.map(fileItemHTML).join('')}</div>`).join('');
+      return `<div class="season-pane" data-season="${esc(sn)}" style="${i===0?'':'display:none'}">${epList}</div>`;
+    }).join('')}`;
+  } else {
+    const files = d.movie_files || [];
+    bodyHTML += `<div class="section-label">Available Files</div>
+      <div class="file-list">${files.map(fileItemHTML).join('') ||
+        '<div class="empty-state">No files found for this title.</div>'}</div>`;
+  }
+
+  $id('modal').innerHTML = `
+    <div class="modal-backdrop" style="background-image:url('${esc(backdrop)}')">
+      <button class="modal-close" onclick="closeDetail()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-title">${esc(title)}</div>
+      <div class="modal-meta">
+        ${meta.year?`<span>${esc(meta.year)}</span>`:''}
+        ${meta.rating?`<span style="color:var(--accent2)">★ ${esc(meta.rating)}</span>`:''}
+        <span>${esc(d.file_count)} file${d.file_count!==1?'s':''}</span>
+      </div>
+      ${plot?`<div class="modal-desc">${esc(plot)}</div>`:''}
+      <div class="chip-row">
+        ${genres.slice(0,5).map(g=>`<span class="chip">${esc(g)}</span>`).join('')}
+        ${d.db_quality?`<span class="chip">${esc(d.db_quality)}</span>`:''}
+        ${d.db_languages?`<span class="chip">${esc(d.db_languages)}</span>`:''}
+      </div>
+      ${bodyHTML}
+    </div>`;
+}
+function switchSeason(sn){
+  document.querySelectorAll('.season-tab').forEach(t=>t.classList.toggle('active', t.dataset.season===sn));
+  document.querySelectorAll('.season-pane').forEach(p=>p.style.display = (p.dataset.season===sn)?'':'none');
+}
+
+// ── NAV SCROLL SHADOW ─────────────────────────────────────────────────────────
+window.addEventListener('scroll', ()=>{
+  $id('nav').classList.toggle('scrolled', window.scrollY > 40);
+});
+
+// ── INIT ────────────────────────────────────────────────────────────────────
+loadHero();
+loadRows();
+</script>
+</body>
+</html>
