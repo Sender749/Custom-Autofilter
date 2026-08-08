@@ -472,17 +472,64 @@ _EP_RANGE_RE = re.compile(r'e\s*(\d{1,3})\s*[-–_]\s*e?\s*(\d{1,3})', re.IGNORE
 _SEASON_COMPLETE_RE = re.compile(r'\b(complete|full\s*season|all\s*episodes?)\b', re.IGNORECASE)
 
 
-def _title_match_tier(q_words_set: set, q_stripped_collapsed: str, q_collapsed: str,
-                       f_words: set, f_stripped_collapsed: str, f_collapsed: str) -> int:
+def _best_phrase_span(q_word_list: list, f_word_list: list):
+    """
+    Looks for the query's words inside the file's word list IN THE SAME
+    ORDER as the query, and finds the tightest (smallest) span they fit in.
+
+    Returns (found, gap):
+      found = True if the words can be found in that order at all.
+      gap   = how many *other* words sit between the first and last matched
+              query word. 0 means the query is a contiguous phrase inside
+              the title (e.g. "welcome to the jungle" inside "Jumanji
+              Welcome To The Jungle"). A bigger number means the query
+              words are scattered apart in unrelated parts of a longer
+              caption (e.g. "my" as the first word of one title and "name"
+              showing up incidentally much later) — that's essentially a
+              coincidence, not a real title match.
+    Returns (False, None) if the words can't be found in that order at all.
+    """
+    n = len(f_word_list)
+    starts = [i for i, w in enumerate(f_word_list) if w == q_word_list[0]]
+    best_gap = None
+    for start in starts:
+        idx = start
+        ok = True
+        for qw in q_word_list[1:]:
+            nxt = None
+            for j in range(idx + 1, n):
+                if f_word_list[j] == qw:
+                    nxt = j
+                    break
+            if nxt is None:
+                ok = False
+                break
+            idx = nxt
+        if ok:
+            gap = (idx - start + 1) - len(q_word_list)
+            if best_gap is None or gap < best_gap:
+                best_gap = gap
+    if best_gap is None:
+        return False, None
+    return True, best_gap
+
+
+def _title_match_tier(q_word_list: list, q_stripped_collapsed: str, q_collapsed: str,
+                       f_word_list: list, f_stripped_collapsed: str, f_collapsed: str) -> int:
     """
     Coarse bucket (higher = better) that HARD-separates a genuine title match
     from a file that merely contains the query words inside a longer/different
-    title. This is a strict tier boundary — nothing in the lower tiers (year,
-    language, quality, resolution) can ever push a file across it. This is
-    what stops e.g. "Jumanji Welcome To The Jungle 2017" from outranking (or
-    even tying with) the actual "Welcome To The Jungle 2026" for the query
-    "welcome to the jungle".
+    title, or scattered somewhere unrelated in a caption. This is a strict
+    tier boundary — nothing in the lower tiers (year, language, quality,
+    resolution) can ever push a file across it. This is what stops e.g.
+    "Jumanji Welcome To The Jungle 2017" from outranking the actual "Welcome
+    To The Jungle 2026" for the query "welcome to the jungle", and what stops
+    a file that merely happens to contain both "my" and "name" far apart
+    from outranking the real "My Name" series for the query "my name".
     """
+    q_words_set = set(q_word_list)
+    f_words = set(f_word_list)
+
     if not q_words_set:
         return 50
 
@@ -496,12 +543,33 @@ def _title_match_tier(q_words_set: set, q_stripped_collapsed: str, q_collapsed: 
     if q_words_set.issubset(f_words):
         extra = f_words - q_words_set
         significant_extra = [w for w in extra if w not in _STOP_WORDS]
-        if not significant_extra:
-            return 90  # only filler words differ — same title
-        # Every extra *significant* word (like "Jumanji") pushes this further
-        # away from a true title match, but it's still ranked below anything
-        # that has zero significant extra words.
-        return max(30, 60 - 5 * len(significant_extra))
+        # Not enough that every query word is *somewhere* in the title —
+        # check whether they sit together, in the query's own order, or are
+        # scattered apart (which is usually a coincidental match).
+        found, gap = _best_phrase_span(q_word_list, f_word_list)
+
+        if found and gap == 0:
+            # The query is a genuine contiguous phrase inside the title.
+            if not significant_extra:
+                return 90  # only filler words differ — same title
+            # Extra *significant* words (like "Jumanji") still push it down,
+            # but it's a real phrase match, so it stays well above scattered
+            # or out-of-order matches.
+            return max(35, 65 - 5 * len(significant_extra))
+
+        if found and gap <= 2:
+            # Only a word or two of "noise" sits between the query words —
+            # still plausibly the same title, but ranked lower the further
+            # apart they are.
+            return max(15, 40 - 6 * gap - 4 * len(significant_extra))
+
+        # Either the words are only reachable badly out of order, or they're
+        # scattered far apart in a long caption/description — this is very
+        # likely just a coincidental word match, not the actual title, so it
+        # sinks near the very bottom no matter what else is true about the
+        # file (year, quality, language, etc. never rescue it).
+        spread_penalty = gap if found else 10
+        return max(1, 8 - spread_penalty // 3)
 
     if q_stripped_collapsed and f_stripped_collapsed.startswith(q_stripped_collapsed):
         return 25   # file title starts with the query
@@ -581,7 +649,6 @@ def rank_results(query: str, files: list, pq: 'ParsedQuery | None' = None) -> li
     q_collapsed = _collapse(pq.title_only or query)
     q_stripped  = _strip_tech(pq.title_only or query)
     q_words     = [w for w in q_stripped.split() if w]
-    q_words_set = set(q_words)
     n_q_words   = len(q_words)
     q_stripped_collapsed = _collapse(q_stripped)
     q_year      = pq.year
@@ -593,12 +660,13 @@ def rank_results(query: str, files: list, pq: 'ParsedQuery | None' = None) -> li
         text = (f.get("caption") or f.get("file_name", "")).strip()
         f_collapsed = _collapse(text)
         f_stripped  = _strip_tech(text)
-        f_words     = set(f_stripped.split())
+        f_word_list = f_stripped.split()
+        f_words     = set(f_word_list)
         f_stripped_collapsed = _collapse(f_stripped)
 
         title_tier = _title_match_tier(
-            q_words_set, q_stripped_collapsed, q_collapsed,
-            f_words, f_stripped_collapsed, f_collapsed,
+            q_words, q_stripped_collapsed, q_collapsed,
+            f_word_list, f_stripped_collapsed, f_collapsed,
         )
 
         # ── Series ordering ───────────────────────────────────────────────
