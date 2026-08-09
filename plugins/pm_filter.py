@@ -14,7 +14,7 @@ from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait, UserIsBlocked, MessageNotModified, PeerIdInvalid, ChatAdminRequired
 from utils import (temp, get_settings, is_check_admin, get_status, get_size,
                    save_group_settings, is_subscribed, is_req_subscribed, get_poster,
-                   get_readable_time, imdb, formate_file_name, process_trending_data,
+                   get_readable_time, formate_file_name, process_trending_data,
                    create_keyboard_layout, log_error, group_setting_buttons)
 from database.users_chats_db import db
 from database.extra_db import silicondb
