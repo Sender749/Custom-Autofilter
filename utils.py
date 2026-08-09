@@ -1,7 +1,6 @@
 import logging
 from pyrogram.errors import InputUserDeactivated, UserNotParticipant, FloodWait, UserIsBlocked, ChatAdminRequired, PeerIdInvalid
 from info import LONG_IMDB_DESCRIPTION, IS_VERIFY, START_IMG, LOG_CHANNEL, DELETE_TIME
-from imdb import Cinemagoer
 import asyncio
 from pyrogram.types import Message, ReplyKeyboardMarkup, InlineKeyboardButton
 from pyrogram import enums
@@ -17,8 +16,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 BANNED = {}
-imdb = Cinemagoer() 
- 
+
 class temp(object):
     BANNED_USERS = []
     BANNED_CHATS = []
@@ -112,81 +110,78 @@ def generate_trend_list(searches):
     return "\n".join([f"{idx+1}. <b>{search}</b>" for idx, search in enumerate(searches)])
 
 async def get_poster(query, bulk=False, id=False, file=None):
-    if not id:
-        query = (query.strip()).lower()
-        title = query
-        year = re.findall(r'[1-2]\d{3}$', query, re.IGNORECASE)
-        if year:
-            year = list_to_str(year[:1])
-            title = (query.replace(year, "")).strip()
-        elif file is not None:
-            year = re.findall(r'[1-2]\d{3}', file, re.IGNORECASE)
-            if year:
-                year = list_to_str(year[:1]) 
-        else:
-            year = None
-        movieid = imdb.search_movie(title.lower(), results=10)
-        if not movieid:
-            return None
-        if year:
-            filtered=list(filter(lambda k: str(k.get('year')) == str(year), movieid))
-            if not filtered:
-                filtered = movieid
-        else:
-            filtered = movieid
-        movieid=list(filter(lambda k: k.get('kind') in ['movie', 'tv series'], filtered))
-        if not movieid:
-            movieid = filtered
-        if bulk:
-            return movieid
-        movieid = movieid[0].movieID
-    else:
-        movieid = query
-    movie = imdb.get_movie(movieid)
-    if movie.get("original air date"):
-        date = movie["original air date"]
-    elif movie.get("year"):
-        date = movie.get("year")
-    else:
-        date = "N/A"
-    plot = ""
-    if not LONG_IMDB_DESCRIPTION:
-        plot = movie.get('plot')
-        if plot and len(plot) > 0:
-            plot = plot[0]
-    else:
-        plot = movie.get('plot outline')
-    if plot and len(plot) > 800:
-        plot = plot[0:800] + "..."
+    """
+    Movie/series metadata lookup used for IMDb-style captions.
 
+    This used to go through Cinemagoer (IMDbPY), which screen-scraped
+    imdb.com directly. That approach is dead — imdb.com returns HTTP 403 to
+    non-browser scrapers — and the `cinemagoer` package's newer releases
+    default to a local "s3" dataset access system that expects a multi-GB
+    IMDb dataset file on disk. There's no such file here, so `Cinemagoer()`
+    now crashes immediately on import with an invalid SQLite URL, which was
+    taking down the whole bot on Koyeb before this function even ran.
+
+    This now reuses the TMDB/OMDb metadata fetcher already wired up in
+    plugins/helper/Imdbposter.py (the same source channel.py's auto-poster
+    feature uses — TMDB first, OMDb as fallback) and reshapes the result
+    into the same field set this function has always returned, so callers
+    in pm_filter.py don't need to change.
+    """
+    from plugins.helper.Imdbposter import get_movie_details, get_movie_detailsx
+    from info import TMDB_POSTER
+
+    details = {}
+    if id:
+        # Direct IMDb-ID lookup — only OMDb's `i=` param supports this,
+        # TMDB search is title-based only.
+        details = await get_movie_details(query, id=True) or {}
+    else:
+        year_match = re.findall(r'[1-2]\d{3}$', query.strip())
+        year = year_match[0] if year_match else None
+        if TMDB_POSTER:
+            tmdb_result = await get_movie_detailsx(query, year=year)
+            if tmdb_result and not tmdb_result.get("error"):
+                details = tmdb_result
+        if not details:
+            details = await get_movie_details(query, file=file) or {}
+
+    if not details:
+        return None
+    if bulk:
+        # Old Cinemagoer bulk mode returned a list of candidate matches for
+        # a picker UI; nothing in the codebase actually uses bulk=True, so
+        # this just wraps the single best match for signature compatibility.
+        return [details]
+
+    imdb_id = details.get('imdb_id') or ""
     return {
-        'title': movie.get('title'),
-        'votes': movie.get('votes'),
-        "aka": list_to_str(movie.get("akas")),
-        "seasons": movie.get("number of seasons"),
-        "box_office": movie.get('box office'),
-        'localized_title': movie.get('localized title'),
-        'kind': movie.get("kind"),
-        "imdb_id": f"tt{movie.get('imdbID')}",
-        "cast": list_to_str(movie.get("cast")),
-        "runtime": list_to_str(movie.get("runtimes")),
-        "countries": list_to_str(movie.get("countries")),
-        "certificates": list_to_str(movie.get("certificates")),
-        "languages": list_to_str(movie.get("languages")),
-        "director": list_to_str(movie.get("director")),
-        "writer":list_to_str(movie.get("writer")),
-        "producer":list_to_str(movie.get("producer")),
-        "composer":list_to_str(movie.get("composer")) ,
-        "cinematographer":list_to_str(movie.get("cinematographer")),
-        "music_team": list_to_str(movie.get("music department")),
-        "distributors": list_to_str(movie.get("distributors")),
-        'release_date': date,
-        'year': movie.get('year'),
-        'genres': list_to_str(movie.get("genres")),
-        'poster': movie.get('full-size cover url' , START_IMG),
-        'plot': plot,
-        'rating': str(movie.get("rating")),
-        'url':f'https://www.imdb.com/title/tt{movieid}'
+        'title': details.get('title') or query,
+        'votes': details.get('votes') or "N/A",
+        "aka": details.get('title') or "N/A",
+        "seasons": details.get('seasons') or "N/A",
+        "box_office": "N/A",
+        'localized_title': details.get('title') or query,
+        'kind': details.get('kind') or "movie",
+        "imdb_id": imdb_id or "N/A",
+        "cast": details.get('cast') or "N/A",
+        "runtime": details.get('runtime') or "N/A",
+        "countries": details.get('countries') or "N/A",
+        "certificates": "N/A",
+        "languages": details.get('languages') or "N/A",
+        "director": details.get('director') or "N/A",
+        "writer": "N/A",
+        "producer": "N/A",
+        "composer": "N/A",
+        "cinematographer": "N/A",
+        "music_team": "N/A",
+        "distributors": "N/A",
+        'release_date': details.get('year') or "N/A",
+        'year': details.get('year') or "N/A",
+        'genres': details.get('genres') or "N/A",
+        'poster': details.get('poster_url') or START_IMG,
+        'plot': details.get('plot') or "N/A",
+        'rating': details.get('rating') or "N/A",
+        'url': details.get('url') or (f"https://www.imdb.com/title/{imdb_id}" if imdb_id else "")
     }
 
 async def users_broadcast(user_id, message, is_pin):
