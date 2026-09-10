@@ -208,10 +208,10 @@ def _normalize_se_tokens(text: str) -> str:
 class ParsedQuery:
     """Holds the decomposed user query intent."""
     __slots__ = ('raw', 'normalized', 'title_only', 'season', 'episode',
-                 'year', 'languages', 'title_words', 'is_series')
+                 'year', 'languages', 'title_words', 'is_series', 'wants_movie')
 
     def __init__(self, raw, normalized, title_only, season, episode,
-                 year, languages, title_words):
+                 year, languages, title_words, wants_movie=False):
         self.raw = raw
         self.normalized = normalized
         self.title_only = title_only
@@ -221,6 +221,17 @@ class ParsedQuery:
         self.languages = languages
         self.title_words = title_words
         self.is_series = season > 0 or bool(re.search(r'\b[Ss]\d{1,2}[Ee]\d{1,3}\b', normalized))
+        # True when the user explicitly typed "movie"/"film" — a strong
+        # signal they want the standalone film, not a TV series episode
+        # that happens to share the same title (e.g. "Mirzapur the movie").
+        self.wants_movie = wants_movie
+
+
+# Matches a standalone "movie" / "film" word in the user's query — used both
+# to detect movie intent and to keep that word from being treated as a
+# "significant extra word" when comparing it against an actual movie title
+# that legitimately contains "Movie" (e.g. "Mirzapur: The Movie").
+_MOVIE_WORD_RE = re.compile(r'\b(movie|movies|film|films)\b', re.IGNORECASE)
 
 
 def parse_query(query: str) -> ParsedQuery:
@@ -233,6 +244,11 @@ def parse_query(query: str) -> ParsedQuery:
       - normalises SE notation to SxxExx
     """
     q = query.strip()
+
+    # Explicit "movie"/"film" intent — user wants the standalone film, not a
+    # series episode of the same title. Checked on the raw query (before any
+    # stripping) so it's never accidentally consumed by another step.
+    wants_movie = bool(_MOVIE_WORD_RE.search(q))
 
     # Extract languages
     langs = [m.group(0).lower() for m in _LANG_RE.finditer(q)]
@@ -280,6 +296,7 @@ def parse_query(query: str) -> ParsedQuery:
         year=year,
         languages=langs,
         title_words=title_words,
+        wants_movie=wants_movie,
     )
 
 
@@ -466,6 +483,7 @@ def _language_score(text: str, preferred_langs: list) -> int:
 # "welcome to THE jungle" should still be treated as the same title).
 _STOP_WORDS = {
     'the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'and', 'or', 'for', 'is',
+    'movie', 'movies', 'film', 'films',
 }
 
 # Combined-episode range inside a filename/caption: "E01-02", "E01-E04", "e01_08"
@@ -675,6 +693,25 @@ def rank_results(query: str, files: list, pq: 'ParsedQuery | None' = None) -> li
         f_season, f_episode = _extract_season_episode(text)
         is_single, ep_sort = _episode_group_info(text, f_season)
 
+        # ── Year ─────────────────────────────────────────────────────────
+        f_year = _extract_year(text)
+
+        # ── Movie vs. series disambiguation ─────────────────────────────
+        # _title_match_tier compares titles AFTER season/episode tokens are
+        # stripped out, so "Mirzapur S03E04 Hindi 1080p" collapses down to
+        # just "mirzapur" — identical to the query "mirzapur" itself, which
+        # wrongly earns it the same top tier as an actual "Mirzapur" MOVIE.
+        # That's fine for a plain "mirzapur" query (browsing all seasons is
+        # the right result), but "Mirzapur 2026" or "Mirzapur the movie" is
+        # clearly asking for a standalone film — demote series episodes in
+        # that case so a real movie match (or, failing that, the closest
+        # year) can win instead. Only applies when the user did NOT ask for
+        # a specific season/episode themselves.
+        if not q_season and not q_episode and f_season:
+            year_mismatch = bool(q_year and f_year != q_year)
+            if pq.wants_movie or year_mismatch:
+                title_tier = min(title_tier, 20)
+
         if q_season:
             # User asked for a specific season — exact match wins outright,
             # everything else falls back ordered by closeness to it.
@@ -687,7 +724,6 @@ def rank_results(query: str, files: list, pq: 'ParsedQuery | None' = None) -> li
         episode_match = 1 if (q_episode and f_episode == q_episode) else 0
 
         # ── Year ─────────────────────────────────────────────────────────
-        f_year = _extract_year(text)
         year_match = 1 if (q_year and f_year == q_year) else 0
         year_recency = f_year  # descending → latest year first as tie-break
 
