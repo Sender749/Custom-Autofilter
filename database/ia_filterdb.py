@@ -147,12 +147,62 @@ _LANG_RE = re.compile(
 
 _YEAR_RE = re.compile(r'\b(19[5-9]\d|20[0-3]\d)\b')
 
-_SE_RE = re.compile(
-    r'\b[Ss](?:eason\s*)?(\d{1,2})\s*[Ee](?:pisode\s*|p\s*)?(\d{1,3})\b'
-    r'|\b[Ss](\d{1,2})[Ee](\d{1,3})\b'
+# ── Season/Episode token normalisation ─────────────────────────────────────
+# Users type season/episode info in many shapes: "season 1 episode 2",
+# "season1episode2" (no space at all), "s01 e02", "s01.e02", "s1e2",
+# "S01_EP02", or scene-style "1x02". `_normalize_se_tokens` below folds all
+# of these into a single canonical "s01e02" form so every downstream
+# consumer (DB search + ranking) only ever has to deal with one shape.
+#
+# `_SEP` is intentionally permissive (zero or more of space/dot/underscore/
+# hyphen) so tokens glued together with no separator at all are still caught
+# — this is the #1 real-world case that broke before ("loke season1episode2").
+_SEP = r'[\s._\-]*'
+
+# Combined "season+episode" in one shot — covers "season 1 episode 2",
+# "season1episode2", "s01e02", "s1 ep2", "s01.e02", "S01_EP02".
+_SE_COMBINED_RE = re.compile(
+    r'\bs(?:eason)?' + _SEP + r'(\d{1,2})' + _SEP +
+    r'(?:episode|ep|e)' + _SEP + r'(\d{1,3})\b',
+    re.IGNORECASE,
 )
-_S_RE  = re.compile(r'\b[Ss](?:eason\s*)?(\d{1,2})\b')
-_E_RE  = re.compile(r'\b[Ee](?:pisode\s*|p\s*)(\d{1,3})\b')
+# Bare scene-style "1x02" / "01x02" (no leading "s"/"season" at all).
+_SE_X_RE = re.compile(r'\b(\d{1,2})x(\d{1,3})\b', re.IGNORECASE)
+# Standalone season only: "season 5", "season5", "s5", "s 05".
+_SEASON_ONLY_RE = re.compile(r'\bseason' + _SEP + r'(\d{1,2})\b|\bs' + _SEP + r'(\d{1,2})\b', re.IGNORECASE)
+# Standalone episode only: "episode 5", "ep5", "e 05".
+_EPISODE_ONLY_RE = re.compile(r'\b(?:episode|ep)' + _SEP + r'(\d{1,3})\b', re.IGNORECASE)
+
+
+def _normalize_se_tokens(text: str) -> str:
+    """
+    Fold every season/episode notation in `text` into canonical "sNNeNN" /
+    "sNN" / "eNN" tokens. Shared by normalize_query() (Stage-1 DB search)
+    and parse_query() (ranking/metadata) so both stay in sync.
+    """
+    q = text
+
+    # 1) Combined season+episode, any spacing/punctuation, incl. no space.
+    q = _SE_COMBINED_RE.sub(
+        lambda m: f"s{int(m.group(1)):02d}e{int(m.group(2)):02d}", q
+    )
+    # 2) Bare "1x02" scene notation → "s01e02".
+    q = _SE_X_RE.sub(
+        lambda m: f"s{int(m.group(1)):02d}e{int(m.group(2)):02d}", q
+    )
+    # 3) Leftover standalone "season N" / "sN" → "sNN".
+    q = _SEASON_ONLY_RE.sub(
+        lambda m: f"s{int(m.group(1) or m.group(2)):02d}", q
+    )
+    # 4) Leftover standalone "episode M" / "epM" → "eMM".
+    q = _EPISODE_ONLY_RE.sub(
+        lambda m: f"e{int(m.group(1)):02d}", q
+    )
+    # 5) Merge a still-separated "s02 e03" / "s02.e03" → "s02e03"
+    #    (can happen if step 1's alternation didn't catch an odd ordering).
+    q = re.sub(r'\b(s\d{2})' + _SEP + r'(e\d{2,3})\b', r'\1\2', q, flags=re.IGNORECASE)
+
+    return q
 
 
 class ParsedQuery:
@@ -193,29 +243,9 @@ def parse_query(query: str) -> ParsedQuery:
     year = int(year_m.group(0)) if year_m else 0
     q_no_year = _YEAR_RE.sub(' ', q_no_lang)
 
-    # Normalise "season N episode M" / "s01 e05" → "s01e05"
-    q_norm = q_no_year
-
-    # Written form "season N episode M"
-    q_norm = re.sub(
-        r'\bseason\s*(\d{1,2})\s+(?:episode|ep)\s*(\d{1,3})\b',
-        lambda m: f"s{int(m.group(1)):02d}e{int(m.group(2)):02d}",
-        q_norm, flags=re.IGNORECASE
-    )
-    # "season N"
-    q_norm = re.sub(
-        r'\bseason\s*(\d{1,2})\b',
-        lambda m: f"s{int(m.group(1)):02d}",
-        q_norm, flags=re.IGNORECASE
-    )
-    # "episode M" / "ep M"
-    q_norm = re.sub(
-        r'\b(?:episode|ep)\s*(\d{1,3})\b',
-        lambda m: f"e{int(m.group(2) if m.lastindex == 2 else m.group(1)):02d}",
-        q_norm, flags=re.IGNORECASE
-    )
-    # Merge spaced "s01 e05" → "s01e05"
-    q_norm = re.sub(r'\b(s\d{1,2})\s+(e\d{1,3})\b', r'\1\2', q_norm, flags=re.IGNORECASE)
+    # Normalise every season/episode shape ("season 1 episode 2",
+    # "season1episode2", "s01 e05", "s01.e05", "1x02" ...) → "s01e05"
+    q_norm = _normalize_se_tokens(q_no_year)
 
     # Drop filler
     q_norm = re.sub(r'\b(?:all\s+episodes?|complete\s+series|full\s+season)\b', '', q_norm, flags=re.IGNORECASE)
@@ -227,8 +257,8 @@ def parse_query(query: str) -> ParsedQuery:
     if se_m:
         season, episode = int(se_m.group(1)), int(se_m.group(2))
     else:
-        s_m = re.search(r's(\d{1,2})', q_norm, re.IGNORECASE)
-        e_m = re.search(r'e(\d{1,3})', q_norm, re.IGNORECASE)
+        s_m = re.search(r's(\d{1,2})\b', q_norm, re.IGNORECASE)
+        e_m = re.search(r'e(\d{1,3})\b', q_norm, re.IGNORECASE)
         if s_m:
             season = int(s_m.group(1))
         if e_m:
@@ -261,50 +291,13 @@ def normalize_query(query: str) -> str:
     """
     Normalise query for Stage 1 DB search.
     Converts all season/episode notations to compact SxxExx format.
-    Handles: season 2, s02, s2, s 2, s2e3, s 2 e 3, s02e03 etc.
+    Handles: season 2, season2, s02, s2, s 2, s2e3, s 2 e 3, s02e03,
+    s01.e02, S01_EP02, 1x02, "season 1 episode 2" and "season1episode2"
+    (no space at all between words/numbers) — anything a real user or a
+    real filename might glue together.
     Does NOT strip year, language, or any user words — only normalises SE tokens.
     """
-    q = query.strip()
-
-    # Written: "season 2 episode 3" → "s02e03"
-    q = re.sub(
-        r'\bseason\s*(\d{1,2})\s+(?:episode|ep)\s*(\d{1,3})\b',
-        lambda m: f"s{int(m.group(1)):02d}e{int(m.group(2)):02d}",
-        q, flags=re.IGNORECASE
-    )
-    # Written: "season 2" → "s02"
-    q = re.sub(
-        r'\bseason\s*(\d{1,2})\b',
-        lambda m: f"s{int(m.group(1)):02d}",
-        q, flags=re.IGNORECASE
-    )
-    # Written: "episode 3" / "ep 3" → "e03"
-    q = re.sub(
-        r'\b(?:episode|ep)\s*(\d{1,3})\b',
-        lambda m: f"e{int(m.group(1)):02d}",
-        q, flags=re.IGNORECASE
-    )
-    # Compact combined: "s2e3", "s 2 e 3", "s2 e3" → "s02e03" (BEFORE standalone s\d)
-    q = re.sub(
-        r'\bs\s*(\d{1,2})\s*e\s*(\d{1,3})\b',
-        lambda m: f"s{int(m.group(1)):02d}e{int(m.group(2)):02d}",
-        q, flags=re.IGNORECASE
-    )
-    # Compact standalone: "s2", "s 2" → "s02"
-    q = re.sub(
-        r'\bs\s*(\d{1,2})\b',
-        lambda m: f"s{int(m.group(1)):02d}",
-        q, flags=re.IGNORECASE
-    )
-    # Compact standalone: "e3", "e 3" → "e03"
-    q = re.sub(
-        r'\be\s*(\d{1,3})\b',
-        lambda m: f"e{int(m.group(1)):02d}",
-        q, flags=re.IGNORECASE
-    )
-    # Merge any remaining "s02 e03" → "s02e03"
-    q = re.sub(r'\b(s\d{2})\s+(e\d{2,3})\b', r'\1\2', q, flags=re.IGNORECASE)
-
+    q = _normalize_se_tokens(query.strip())
     return ' '.join(q.split()).strip()
 
 
@@ -402,9 +395,13 @@ _LANG_RANK = {
 # Precompiled once at import time — avoids re-building these pattern objects
 # on every single call (rank_results calls these once per file, per search).
 _YEAR_EXTRACT_RE = re.compile(r'\b(19[5-9]\d|20[0-3]\d)\b')
-_SE_EXTRACT_RE = re.compile(r's(\d{1,2})e(\d{1,3})', re.IGNORECASE)
-_S_EXTRACT_RE = re.compile(r's(\d{1,2})', re.IGNORECASE)
-_E_EXTRACT_RE = re.compile(r'e(\d{1,3})', re.IGNORECASE)
+_SE_EXTRACT_RE = re.compile(r'\bs(\d{1,2})' + _SEP + r'e(\d{1,3})\b', re.IGNORECASE)
+_SE_X_EXTRACT_RE = re.compile(r'\b(\d{1,2})x(\d{1,3})\b', re.IGNORECASE)
+# Word-boundaried so "Se7en", "Take2", etc. don't get misread as S/E tokens
+# (both sides of a bare 's'/'e' must sit on a real word boundary — a letter
+# immediately before/after, as in "Se7en", never has one).
+_S_EXTRACT_RE = re.compile(r'\bs(\d{1,2})\b', re.IGNORECASE)
+_E_EXTRACT_RE = re.compile(r'\be(\d{1,3})\b', re.IGNORECASE)
 _MULTI_AUDIO_RE = re.compile(r'\b(dual|multi)\b', re.IGNORECASE)
 
 
@@ -415,9 +412,14 @@ def _extract_year(text: str) -> int:
 
 def _extract_season_episode(text: str):
     season = episode = 0
+    # "S01E02", "S01.E02", "S01_E02", "S01-E02" ...
     se_m = _SE_EXTRACT_RE.search(text)
     if se_m:
         return int(se_m.group(1)), int(se_m.group(2))
+    # Scene-style "1x02" filenames with no "S"/"E" letters at all.
+    x_m = _SE_X_EXTRACT_RE.search(text)
+    if x_m:
+        return int(x_m.group(1)), int(x_m.group(2))
     s_m = _S_EXTRACT_RE.search(text)
     e_m = _E_EXTRACT_RE.search(text)
     if s_m:
